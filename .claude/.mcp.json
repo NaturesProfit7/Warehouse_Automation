@@ -1,0 +1,24 @@
+{
+  "enabled": true,
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-filesystem", "."]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  },
+  "permissions": {
+    "allow": [
+      "MCP(filesystem:read,write)",
+      "MCP(github:read,create_pr,create_issue)"
+    ],
+    "deny": [
+      "MCP(*:admin)",
+      "MCP(*:delete)"
+    ]
+  }
+}

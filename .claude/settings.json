@@ -1,0 +1,44 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "notifications": { "preferredNotifChannel": "terminal_bell" },
+  "permissions": {
+    "allow": [
+      "Read", "Edit", "MultiEdit",
+      "Bash(git:add,commit,pull,push,status,diff,log,show)",
+      "Bash(pytest:*)",
+      "Bash(ruff:check,format,--fix)",
+      "Bash(mypy:src/,tests/)",
+      "Bash(black:src/,tests/)",
+      "Bash(pip:list,show,freeze)",
+      "Bash(make:test,lint,format)",
+      "Bash(gh:pr,issue,repo,auth)"
+    ],
+    "deny": [
+      ".env*", "secrets/**", "docs/TZ.md",
+      ".git/config", "*.key", "*.pem",
+      "Bash(curl:*)", "Bash(wget:*)",
+      "Bash(rm:-rf)", "Bash(sudo:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {"type": "command", "command": "if [ -f docs/TZ.md ] && git diff --quiet docs/TZ.md; then echo 'TZ.md protected'; git checkout -- docs/TZ.md; fi"}
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit|Write", 
+        "hooks": [
+          {"type": "command", "command": "if [ -f .env ] && git diff --quiet .env; then echo 'Env protected'; git checkout -- .env; fi"}
+        ]
+      }
+    ]
+  },
+  "projectSettings": {
+    "testCommand": "pytest -q",
+    "lintCommand": "ruff check src/ && mypy src/",
+    "formatCommand": "black src/ tests/ && ruff format src/ tests/"
+  }
+}
