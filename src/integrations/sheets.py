@@ -243,6 +243,45 @@ class GoogleSheetsClient:
 
     # === Movements ===
     
+    def add_movements(self, movements: List[Movement]) -> None:
+        """Добавление нескольких движений товара (batch)."""
+        if not movements:
+            return
+            
+        worksheet = self._get_worksheet("Movements")
+        
+        # Проверяем заголовки
+        if worksheet.row_count == 0 or not worksheet.row_values(1):
+            headers = [
+                "id", "datetime", "type", "source_type", "source_id",
+                "blank_sku", "qty", "balance_after", "user", "note", "hash"
+            ]
+            worksheet.append_row(headers)
+        
+        # Подготавливаем данные для batch добавления
+        rows_data = []
+        for movement in movements:
+            row_data = [
+                str(movement.id),
+                movement.timestamp.isoformat(),
+                movement.type.value,
+                movement.source_type.value,
+                movement.source_id,
+                movement.blank_sku,
+                movement.qty,
+                movement.balance_after,
+                movement.user or "",
+                movement.note or "",
+                movement.hash
+            ]
+            rows_data.append(row_data)
+        
+        # Batch добавление
+        for row_data in rows_data:
+            worksheet.append_row(row_data)
+        
+        logger.info(f"Added {len(movements)} movements")
+
     def add_movement(self, movement: Movement) -> None:
         """Добавление движения товара."""
         worksheet = self._get_worksheet("Movements")
@@ -386,3 +425,131 @@ class GoogleSheetsClient:
                 logger.error(f"Failed to create worksheet '{sheet_name}': {e}")
         
         logger.info("All worksheets initialized")
+
+    # === Дополнительные методы для StockService ===
+    
+    @google_sheets_retry
+    def get_current_stock(self, blank_sku: str) -> Optional[CurrentStock]:
+        """Получение текущего остатка по SKU."""
+        try:
+            worksheet = self._get_worksheet("Current_Stock")
+            records = worksheet.get_all_records()
+            
+            for record in records:
+                if record.get("blank_sku") == blank_sku:
+                    return CurrentStock(
+                        blank_sku=record["blank_sku"],
+                        on_hand=int(record.get("on_hand", 0)),
+                        reserved=int(record.get("reserved", 0)),
+                        available=int(record.get("available", 0)),
+                        last_receipt_date=date.fromisoformat(record["last_receipt_date"]) if record.get("last_receipt_date") else None,
+                        last_order_date=date.fromisoformat(record["last_order_date"]) if record.get("last_order_date") else None,
+                        avg_daily_usage=float(record.get("avg_daily_usage", 0.0)),
+                        days_of_stock=int(record["days_of_stock"]) if record.get("days_of_stock") else None,
+                        last_updated=datetime.fromisoformat(record.get("last_updated", datetime.now().isoformat()))
+                    )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get current stock for {blank_sku}", error=str(e))
+            return None
+
+    @google_sheets_retry  
+    def get_all_current_stock(self) -> List[CurrentStock]:
+        """Получение всех текущих остатков."""
+        try:
+            worksheet = self._get_worksheet("Current_Stock")
+            records = worksheet.get_all_records()
+            
+            stocks = []
+            for record in records:
+                stock = CurrentStock(
+                    blank_sku=record["blank_sku"],
+                    on_hand=int(record.get("on_hand", 0)),
+                    reserved=int(record.get("reserved", 0)),
+                    available=int(record.get("available", 0)),
+                    last_receipt_date=date.fromisoformat(record["last_receipt_date"]) if record.get("last_receipt_date") else None,
+                    last_order_date=date.fromisoformat(record["last_order_date"]) if record.get("last_order_date") else None,
+                    avg_daily_usage=float(record.get("avg_daily_usage", 0.0)),
+                    days_of_stock=int(record["days_of_stock"]) if record.get("days_of_stock") else None,
+                    last_updated=datetime.fromisoformat(record.get("last_updated", datetime.now().isoformat()))
+                )
+                stocks.append(stock)
+            
+            return stocks
+            
+        except Exception as e:
+            logger.error("Failed to get all current stock", error=str(e))
+            return []
+
+    @google_sheets_retry
+    def movement_exists(self, movement_hash: str) -> bool:
+        """Проверка существования движения по хешу."""
+        try:
+            worksheet = self._get_worksheet("Movements")
+            records = worksheet.get_all_records()
+            
+            for record in records:
+                if record.get("hash") == movement_hash:
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            logger.error(f"Failed to check movement existence for hash {movement_hash}", error=str(e))
+            return False
+
+    @google_sheets_retry
+    def add_unmapped_items(self, unmapped_items: List[UnmappedItem]) -> None:
+        """Добавление unmapped позиций."""
+        if not unmapped_items:
+            return
+            
+        try:
+            worksheet = self._get_worksheet("Unmapped_Items")
+            
+            # Проверяем заголовки
+            if worksheet.row_count == 0 or not worksheet.row_values(1):
+                headers = [
+                    "datetime", "order_id", "line_id", "product_name",
+                    "properties", "suggested_sku", "error_type", "resolution"
+                ]
+                worksheet.append_row(headers)
+            
+            # Добавляем записи
+            for item in unmapped_items:
+                row_data = [
+                    item.timestamp.isoformat(),
+                    item.order_id,
+                    item.line_id,
+                    item.product_name,
+                    json.dumps(item.properties),
+                    item.suggested_sku or "",
+                    item.error_type,
+                    item.resolution
+                ]
+                worksheet.append_row(row_data)
+            
+            logger.info(f"Added {len(unmapped_items)} unmapped items")
+            
+        except Exception as e:
+            logger.error("Failed to add unmapped items", error=str(e))
+            raise GoogleSheetsError(f"Failed to add unmapped items: {e}")
+
+
+# Создаем alias для обратной совместимости
+SheetsClient = GoogleSheetsClient
+
+# Глобальный экземпляр клиента
+_sheets_client: Optional[SheetsClient] = None
+
+
+def get_sheets_client() -> SheetsClient:
+    """Получение глобального экземпляра Sheets клиента."""
+    global _sheets_client
+    
+    if _sheets_client is None:
+        _sheets_client = SheetsClient()
+    
+    return _sheets_client

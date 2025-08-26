@@ -133,3 +133,25 @@ def google_sheets_retry(func: Callable) -> Callable:
     return exponential_backoff(
         retryable_exceptions=(APIError, RetryableError, ConnectionError, TimeoutError)
     )(func)
+
+
+def retry_with_backoff(
+    max_retries: int = None,
+    retryable_exceptions: Tuple[Type[Exception], ...] = None
+) -> Callable:
+    """Упрощенный retry декоратор для общих случаев."""
+    
+    if retryable_exceptions is None:
+        import httpx
+        retryable_exceptions = (
+            httpx.RequestError, 
+            httpx.TimeoutException,
+            RetryableError,
+            ConnectionError,
+            TimeoutError
+        )
+    
+    return exponential_backoff(
+        max_retries=max_retries,
+        retryable_exceptions=retryable_exceptions
+    )
