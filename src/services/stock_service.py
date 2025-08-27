@@ -1,20 +1,24 @@
 """Сервис управления остатками заготовок."""
 
 import hashlib
-from datetime import datetime, date
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
 from uuid import uuid4
 
-from ..core.models import (
-    Movement, MovementType, MovementSourceType, CurrentStock,
-    ProductMapping, BlankSKU, UnmappedItem
-)
 from ..core.exceptions import (
-    StockCalculationError, DuplicateMovementError, 
-    InsufficientStockError, MappingError
+    DuplicateMovementError,
+    MappingError,
+    StockCalculationError,
+)
+from ..core.models import (
+    CurrentStock,
+    Movement,
+    MovementSourceType,
+    MovementType,
+    ProductMapping,
+    UnmappedItem,
 )
 from ..integrations.keycrm import KeyCRMOrder, KeyCRMOrderItem
-from ..integrations.sheets import get_sheets_client, SheetsClient
+from ..integrations.sheets import SheetsClient, get_sheets_client
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,19 +26,19 @@ logger = get_logger(__name__)
 
 class StockService:
     """Сервис для управления остатками заготовок."""
-    
-    def __init__(self, sheets_client: Optional[SheetsClient] = None):
+
+    def __init__(self, sheets_client: SheetsClient | None = None):
         self.sheets_client = sheets_client or get_sheets_client()
-        self._mapping_cache: Optional[List[ProductMapping]] = None
-        self._cache_updated: Optional[datetime] = None
-        
+        self._mapping_cache: list[ProductMapping] | None = None
+        self._cache_updated: datetime | None = None
+
         logger.info("StockService initialized")
-    
+
     async def process_order_movement(
-        self, 
-        order: KeyCRMOrder, 
+        self,
+        order: KeyCRMOrder,
         source_type: MovementSourceType = MovementSourceType.KEYCRM_WEBHOOK
-    ) -> List[Movement]:
+    ) -> list[Movement]:
         """
         Обработка движений по заказу (расход заготовок).
         
@@ -52,16 +56,28 @@ class StockService:
         """
         try:
             logger.info("Processing order movements", order_id=order.id, items_count=len(order.items))
-            
+
             movements = []
             unmapped_items = []
-            
+            skipped_items = []
+
             for item in order.items:
                 try:
-                    # Поиск маппинга
-                    mapping = await self._find_mapping_for_item(item)
+                    # Проверяем, является ли товар адресником
+                    if not self._is_address_tag_product(item):
+                        skipped_items.append(item)
+                        logger.info(
+                            "Item skipped - not an address tag",
+                            product_name=item.product_name,
+                            order_id=order.id,
+                            item_id=item.id
+                        )
+                        continue
+
+                    # Поиск маппинга для адресников
+                    mapping = self._find_mapping_for_item(item)
                     if not mapping:
-                        # Сохраняем unmapped item
+                        # Сохраняем unmapped item (только для адресников)
                         unmapped_item = UnmappedItem(
                             order_id=str(order.id),
                             line_id=str(item.id),
@@ -72,7 +88,7 @@ class StockService:
                         )
                         unmapped_items.append(unmapped_item)
                         continue
-                    
+
                     # Проверка дубликата
                     movement_hash = self._calculate_movement_hash(
                         source_id=f"{order.id}_{item.id}",
@@ -81,21 +97,21 @@ class StockService:
                         movement_type=MovementType.ORDER,
                         timestamp=order.updated_at
                     )
-                    
-                    if await self._movement_exists(movement_hash):
+
+                    if self._movement_exists(movement_hash):
                         logger.warning(
-                            "Movement already exists", 
-                            order_id=order.id, 
+                            "Movement already exists",
+                            order_id=order.id,
                             item_id=item.id,
                             hash=movement_hash
                         )
                         raise DuplicateMovementError(f"Movement already exists: {movement_hash}")
-                    
+
                     # Расчет остатка после движения
-                    current_stock = await self.get_current_stock(mapping.blank_sku)
+                    current_stock = self.get_current_stock(mapping.blank_sku)
                     quantity_consumed = item.quantity * mapping.qty_per_unit
                     new_balance = current_stock.on_hand - quantity_consumed
-                    
+
                     # Проверка достаточности остатков (согласно ТЗ не должно быть отрицательных)
                     if new_balance < 0:
                         logger.error(
@@ -108,7 +124,7 @@ class StockService:
                         # По ТЗ отрицательных остатков быть не может, но продолжаем обработку
                         # для уведомления, устанавливаем остаток в 0
                         new_balance = 0
-                    
+
                     # Создание движения
                     movement = Movement(
                         id=uuid4(),
@@ -123,9 +139,9 @@ class StockService:
                         note=f"Order item: {item.product_name} x{item.quantity}",
                         hash=movement_hash
                     )
-                    
+
                     movements.append(movement)
-                    
+
                 except MappingError:
                     # Уже обработано выше
                     pass
@@ -137,35 +153,37 @@ class StockService:
                         error=str(e)
                     )
                     raise StockCalculationError(f"Failed to process item {item.id}: {str(e)}")
-            
+
             # Сохранение движений
             if movements:
-                await self._save_movements(movements)
-                await self._update_current_stock(movements)
-            
+                self._save_movements(movements)
+                self._update_current_stock(movements)
+
             # Сохранение unmapped items
             if unmapped_items:
-                await self._save_unmapped_items(unmapped_items)
-            
+                self._save_unmapped_items(unmapped_items)
+
             logger.info(
                 "Order movements processed",
                 order_id=order.id,
                 movements_created=len(movements),
-                unmapped_items=len(unmapped_items)
+                unmapped_items=len(unmapped_items),
+                skipped_items=len(skipped_items),
+                total_items=len(order.items)
             )
-            
+
             return movements
-            
+
         except Exception as e:
             logger.error("Failed to process order movements", order_id=order.id, error=str(e))
             raise StockCalculationError(f"Failed to process order {order.id}: {str(e)}")
-    
+
     async def add_receipt_movement(
         self,
         blank_sku: str,
         quantity: int,
         user: str,
-        note: Optional[str] = None,
+        note: str | None = None,
         source_type: MovementSourceType = MovementSourceType.TELEGRAM
     ) -> Movement:
         """
@@ -184,13 +202,13 @@ class StockService:
         try:
             if quantity <= 0:
                 raise ValueError("Quantity must be positive")
-            
+
             logger.info("Adding receipt movement", blank_sku=blank_sku, quantity=quantity, user=user)
-            
+
             # Получение текущего остатка
-            current_stock = await self.get_current_stock(blank_sku)
+            current_stock = self.get_current_stock(blank_sku)
             new_balance = current_stock.on_hand + quantity
-            
+
             # Создание движения
             timestamp = datetime.now()
             movement_hash = self._calculate_movement_hash(
@@ -200,7 +218,7 @@ class StockService:
                 movement_type=MovementType.RECEIPT,
                 timestamp=timestamp
             )
-            
+
             movement = Movement(
                 id=uuid4(),
                 timestamp=timestamp,
@@ -214,11 +232,11 @@ class StockService:
                 note=note or f"Receipt of {quantity} units",
                 hash=movement_hash
             )
-            
+
             # Сохранение
             await self._save_movements([movement])
             await self._update_current_stock([movement])
-            
+
             logger.info(
                 "Receipt movement added",
                 blank_sku=blank_sku,
@@ -226,13 +244,13 @@ class StockService:
                 new_balance=new_balance,
                 movement_id=str(movement.id)
             )
-            
+
             return movement
-            
+
         except Exception as e:
             logger.error("Failed to add receipt movement", blank_sku=blank_sku, error=str(e))
             raise StockCalculationError(f"Failed to add receipt: {str(e)}")
-    
+
     async def add_correction_movement(
         self,
         blank_sku: str,
@@ -261,11 +279,11 @@ class StockService:
                 adjustment=quantity_adjustment,
                 user=user
             )
-            
+
             # Получение текущего остатка
-            current_stock = await self.get_current_stock(blank_sku)
+            current_stock = self.get_current_stock(blank_sku)
             new_balance = current_stock.on_hand + quantity_adjustment
-            
+
             # Не допускаем отрицательного остатка
             if new_balance < 0:
                 logger.warning(
@@ -278,7 +296,7 @@ class StockService:
                 # Корректируем до нуля
                 quantity_adjustment = -current_stock.on_hand
                 new_balance = 0
-            
+
             # Создание движения
             timestamp = datetime.now()
             movement_hash = self._calculate_movement_hash(
@@ -288,7 +306,7 @@ class StockService:
                 movement_type=MovementType.CORRECTION,
                 timestamp=timestamp
             )
-            
+
             movement = Movement(
                 id=uuid4(),
                 timestamp=timestamp,
@@ -302,11 +320,11 @@ class StockService:
                 note=f"Correction: {reason}",
                 hash=movement_hash
             )
-            
+
             # Сохранение
             await self._save_movements([movement])
             await self._update_current_stock([movement])
-            
+
             logger.info(
                 "Correction movement added",
                 blank_sku=blank_sku,
@@ -314,14 +332,14 @@ class StockService:
                 new_balance=new_balance,
                 movement_id=str(movement.id)
             )
-            
+
             return movement
-            
+
         except Exception as e:
             logger.error("Failed to add correction movement", blank_sku=blank_sku, error=str(e))
             raise StockCalculationError(f"Failed to add correction: {str(e)}")
-    
-    async def get_current_stock(self, blank_sku: str) -> CurrentStock:
+
+    def get_current_stock(self, blank_sku: str) -> CurrentStock:
         """
         Получение текущего остатка заготовки.
         
@@ -333,14 +351,14 @@ class StockService:
         """
         try:
             # Попытка получения из Current_Stock листа
-            current_stock = await self.sheets_client.get_current_stock(blank_sku)
-            
+            current_stock = self.sheets_client.get_current_stock(blank_sku)
+
             if current_stock:
                 return current_stock
-            
+
             # Если записи нет, создаем с нулевым остатком
             logger.info("Creating new stock record", blank_sku=blank_sku)
-            
+
             new_stock = CurrentStock(
                 blank_sku=blank_sku,
                 on_hand=0,
@@ -348,51 +366,61 @@ class StockService:
                 available=0,
                 last_updated=datetime.now()
             )
-            
-            await self.sheets_client.update_current_stock([new_stock])
+
+            self.sheets_client.update_current_stock([new_stock])
             return new_stock
-            
+
         except Exception as e:
             logger.error("Failed to get current stock", blank_sku=blank_sku, error=str(e))
             raise StockCalculationError(f"Failed to get stock for {blank_sku}: {str(e)}")
-    
-    async def get_all_current_stock(self) -> List[CurrentStock]:
+
+    async def get_all_current_stock(self) -> list[CurrentStock]:
         """Получение всех текущих остатков."""
         try:
             return await self.sheets_client.get_all_current_stock()
         except Exception as e:
             logger.error("Failed to get all current stock", error=str(e))
             raise StockCalculationError(f"Failed to get all stock: {str(e)}")
-    
-    async def _find_mapping_for_item(self, item: KeyCRMOrderItem) -> Optional[ProductMapping]:
+
+    def _find_mapping_for_item(self, item: KeyCRMOrderItem) -> ProductMapping | None:
         """Поиск маппинга для товара заказа."""
-        
+
         try:
-            mappings = await self._get_product_mappings()
-            
-            # Извлекаем свойства товара
+            mappings = self._get_product_mappings()
+
+            # Извлекаем свойства товара (маппинг украинских названий из KeyCRM)
             product_name = item.product_name.strip()
-            size_property = item.properties.get("size", "").strip()
-            metal_color = item.properties.get("metal_color", "").strip()
-            
+
+            # Для размера проверяем и "Розмір" и "Форма" (для фигурных адресников)
+            size_property = (item.properties.get("Розмір", "") or
+                           item.properties.get("Форма", "")).strip()
+
+            metal_color = item.properties.get("Колір", "").strip()     # "Колір" из KeyCRM
+
             # Поиск по приоритету (сначала точное совпадение)
             best_match = None
             highest_priority = 0
-            
+
             for mapping in mappings:
                 if not mapping.active:
                     continue
-                
-                # Проверка совпадения
-                name_match = mapping.product_name.lower() == product_name.lower()
-                size_match = mapping.size_property.lower() == size_property.lower()
-                color_match = mapping.metal_color.lower() == metal_color.lower()
-                
+
+                # Проверка совпадения (если поле в маппинге пустое - считаем подходящим)
+                name_match = mapping.product_name.strip().lower() == product_name.lower()
+
+                # Size совпадение (если пусто в маппинге - подходит любой)
+                size_match = (not mapping.size_property.strip() or
+                             mapping.size_property.strip().lower() == size_property.lower())
+
+                # Color совпадение (если пусто в маппинге - подходит любой)
+                color_match = (not mapping.metal_color.strip() or
+                              mapping.metal_color.strip().lower() == metal_color.lower())
+
                 if name_match and size_match and color_match:
                     if mapping.priority > highest_priority:
                         best_match = mapping
                         highest_priority = mapping.priority
-            
+
             if best_match:
                 logger.debug(
                     "Found mapping for item",
@@ -403,7 +431,7 @@ class StockService:
                     priority=best_match.priority
                 )
                 return best_match
-            
+
             logger.warning(
                 "No mapping found for item",
                 product_name=product_name,
@@ -411,57 +439,95 @@ class StockService:
                 metal_color=metal_color,
                 properties=item.properties
             )
-            
+
             return None
-            
+
         except Exception as e:
             logger.error("Error finding mapping for item", item_id=item.id, error=str(e))
             raise MappingError(f"Failed to find mapping: {str(e)}")
-    
-    async def _get_product_mappings(self) -> List[ProductMapping]:
-        """Получение маппингов с кешированием."""
+
+    def _is_address_tag_product(self, item: KeyCRMOrderItem) -> bool:
+        """
+        Проверка, является ли товар адресником.
         
+        Args:
+            item: Товар из KeyCRM заказа
+            
+        Returns:
+            bool: True если товар является адресником
+        """
+        product_name = item.product_name.lower().strip()
+
+        # Ключевые слова для адресников
+        address_tag_keywords = [
+            "адресник",  # основное слово
+            "жетон",     # альтернативное название
+            "медальон"   # еще одно возможное название
+        ]
+
+        # Проверяем наличие ключевых слов
+        for keyword in address_tag_keywords:
+            if keyword in product_name:
+                logger.debug(
+                    "Product identified as address tag",
+                    product_name=item.product_name,
+                    keyword=keyword
+                )
+                return True
+
+        logger.debug(
+            "Product is not an address tag",
+            product_name=item.product_name
+        )
+        return False
+
+    def _get_product_mappings(self) -> list[ProductMapping]:
+        """Получение маппингов с кешированием."""
+
         # Кеш на 5 минут
-        if (self._mapping_cache is not None and 
-            self._cache_updated is not None and 
+        if (self._mapping_cache is not None and
+            self._cache_updated is not None and
             (datetime.now() - self._cache_updated).total_seconds() < 300):
             return self._mapping_cache
-        
+
         try:
             logger.debug("Refreshing mapping cache")
-            self._mapping_cache = await self.sheets_client.get_product_mappings()
+            self._mapping_cache = self.sheets_client.get_product_mappings()
             self._cache_updated = datetime.now()
-            
+
             logger.info("Mapping cache refreshed", count=len(self._mapping_cache))
             return self._mapping_cache
-            
+
         except Exception as e:
             logger.error("Failed to get product mappings", error=str(e))
             raise MappingError(f"Failed to get mappings: {str(e)}")
-    
-    def _suggest_sku_for_item(self, item: KeyCRMOrderItem) -> Optional[str]:
+
+    def _suggest_sku_for_item(self, item: KeyCRMOrderItem) -> str | None:
         """Предположение SKU для unmapped товара."""
-        
+
         try:
             product_name = item.product_name.lower()
             properties = item.properties
-            
-            # Определение типа
+
+            # Определение типа (сначала проверяем конкретные формы)
             if "кістка" in product_name or "bone" in product_name:
                 sku_type = "BONE"
             elif "бублик" in product_name or "ring" in product_name:
                 sku_type = "RING"
             elif "круглий" in product_name or "round" in product_name:
                 sku_type = "ROUND"
-            elif "фігурний" in product_name or "серце" in str(properties):
-                sku_type = "HEART"
-            elif "квітка" in str(properties):
+            # Для фигурных - сначала проверяем конкретную форму
+            elif "квітка" in str(properties) or "квітка" in product_name:
                 sku_type = "FLOWER"
-            elif "хмарка" in str(properties):
+            elif "хмарка" in str(properties) or "хмарка" in product_name:
                 sku_type = "CLOUD"
+            elif "серце" in str(properties) or "серце" in product_name:
+                sku_type = "HEART"
+            elif "фігурний" in product_name:  # Общий случай для фигурных
+                sku_type = "HEART"  # По умолчанию сердце
             else:
                 return None
-            
+
             # Определение размера
             size = "25"  # По умолчанию
             size_str = str(properties.get("size", ""))
@@ -469,22 +535,22 @@ class StockService:
                 size = "20"
             elif "30" in size_str:
                 size = "30"
-            
+
             # Определение цвета
             color = "GLD"  # По умолчанию золото
             color_str = str(properties.get("metal_color", "")).lower()
             if "срібло" in color_str or "silver" in color_str:
                 color = "SIL"
-            
+
             suggested_sku = f"BLK-{sku_type}-{size}-{color}"
-            
+
             logger.debug("Suggested SKU", original=item.product_name, suggested=suggested_sku)
             return suggested_sku
-            
+
         except Exception as e:
             logger.error("Error suggesting SKU", item_id=item.id, error=str(e))
             return None
-    
+
     def _calculate_movement_hash(
         self,
         source_id: str,
@@ -494,40 +560,40 @@ class StockService:
         timestamp: datetime
     ) -> str:
         """Расчет хеша движения для дедупликации."""
-        
+
         hash_string = f"{source_id}_{blank_sku}_{qty}_{movement_type.value}_{timestamp.isoformat()}"
         return hashlib.sha256(hash_string.encode()).hexdigest()
-    
-    async def _movement_exists(self, movement_hash: str) -> bool:
+
+    def _movement_exists(self, movement_hash: str) -> bool:
         """Проверка существования движения по хешу."""
-        return await self.sheets_client.movement_exists(movement_hash)
-    
-    async def _save_movements(self, movements: List[Movement]) -> None:
+        return self.sheets_client.movement_exists(movement_hash)
+
+    def _save_movements(self, movements: list[Movement]) -> None:
         """Сохранение движений в Google Sheets."""
-        await self.sheets_client.add_movements(movements)
-    
-    async def _update_current_stock(self, movements: List[Movement]) -> None:
+        self.sheets_client.add_movements(movements)
+
+    def _update_current_stock(self, movements: list[Movement]) -> None:
         """Обновление текущих остатков на основе движений."""
-        
+
         # Группируем движения по SKU
-        stock_updates: Dict[str, int] = {}
-        
+        stock_updates: dict[str, int] = {}
+
         for movement in movements:
             if movement.blank_sku not in stock_updates:
                 stock_updates[movement.blank_sku] = 0
             stock_updates[movement.blank_sku] += movement.qty
-        
+
         # Обновляем остатки
         updated_stocks = []
-        
+
         for blank_sku, qty_change in stock_updates.items():
-            current_stock = await self.get_current_stock(blank_sku)
-            
+            current_stock = self.get_current_stock(blank_sku)
+
             # Обновляем значения
             current_stock.on_hand += qty_change
             current_stock.available = current_stock.on_hand - current_stock.reserved
             current_stock.last_updated = datetime.now()
-            
+
             # Обновляем даты последних операций
             for movement in movements:
                 if movement.blank_sku == blank_sku:
@@ -535,26 +601,26 @@ class StockService:
                         current_stock.last_receipt_date = movement.timestamp.date()
                     elif movement.type == MovementType.ORDER:
                         current_stock.last_order_date = movement.timestamp.date()
-            
+
             updated_stocks.append(current_stock)
-        
+
         # Сохраняем обновления
-        await self.sheets_client.update_current_stock(updated_stocks)
-    
-    async def _save_unmapped_items(self, unmapped_items: List[UnmappedItem]) -> None:
+        self.sheets_client.update_current_stock(updated_stocks)
+
+    def _save_unmapped_items(self, unmapped_items: list[UnmappedItem]) -> None:
         """Сохранение unmapped позиций."""
-        await self.sheets_client.add_unmapped_items(unmapped_items)
+        self.sheets_client.add_unmapped_items(unmapped_items)
 
 
 # Глобальный экземпляр сервиса
-_stock_service: Optional[StockService] = None
+_stock_service: StockService | None = None
 
 
 def get_stock_service() -> StockService:
     """Получение глобального экземпляра Stock Service."""
     global _stock_service
-    
+
     if _stock_service is None:
         _stock_service = StockService()
-    
+
     return _stock_service

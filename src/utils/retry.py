@@ -4,21 +4,22 @@ import asyncio
 import functools
 import logging
 import random
-from typing import Callable, Type, Union, Tuple, Any
+from collections.abc import Callable
+from typing import Any
 
-from ..core.exceptions import RetryableError
 from ..config import settings
+from ..core.exceptions import RetryableError
 
 logger = logging.getLogger(__name__)
 
 
 def exponential_backoff(
     max_retries: int = None,
-    base_delay: float = None, 
+    base_delay: float = None,
     max_delay: float = 60,
     backoff_factor: float = 2,
     jitter: bool = True,
-    retryable_exceptions: Tuple[Type[Exception], ...] = (Exception,)
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,)
 ):
     """
     Декоратор для повторных попыток с экспоненциальным backoff.
@@ -35,18 +36,18 @@ def exponential_backoff(
         max_retries = settings.MAX_RETRIES
     if base_delay is None:
         base_delay = settings.RETRY_DELAY_SECONDS
-        
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs) -> Any:
             last_exception = None
-            
+
             for attempt in range(max_retries + 1):
                 try:
                     return await func(*args, **kwargs)
                 except retryable_exceptions as e:
                     last_exception = e
-                    
+
                     if attempt == max_retries:
                         logger.error(
                             f"Final retry attempt failed for {func.__name__}: {e}",
@@ -58,11 +59,11 @@ def exponential_backoff(
                             }
                         )
                         break
-                    
+
                     delay = min(base_delay * (backoff_factor ** attempt), max_delay)
                     if jitter:
                         delay *= (0.5 + random.random() * 0.5)  # +/- 25% jitter
-                    
+
                     logger.warning(
                         f"Retry {attempt + 1}/{max_retries} for {func.__name__} in {delay:.2f}s: {e}",
                         extra={
@@ -72,21 +73,21 @@ def exponential_backoff(
                             "error": str(e)
                         }
                     )
-                    
+
                     await asyncio.sleep(delay)
-            
+
             raise last_exception
-        
+
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs) -> Any:
             last_exception = None
-            
+
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
                 except retryable_exceptions as e:
                     last_exception = e
-                    
+
                     if attempt == max_retries:
                         logger.error(
                             f"Final retry attempt failed for {func.__name__}: {e}",
@@ -98,11 +99,11 @@ def exponential_backoff(
                             }
                         )
                         break
-                    
+
                     delay = min(base_delay * (backoff_factor ** attempt), max_delay)
                     if jitter:
                         delay *= (0.5 + random.random() * 0.5)
-                    
+
                     logger.warning(
                         f"Retry {attempt + 1}/{max_retries} for {func.__name__} in {delay:.2f}s: {e}",
                         extra={
@@ -112,24 +113,24 @@ def exponential_backoff(
                             "error": str(e)
                         }
                     )
-                    
+
                     import time
                     time.sleep(delay)
-            
+
             raise last_exception
-        
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         else:
             return sync_wrapper
-            
+
     return decorator
 
 
 def google_sheets_retry(func: Callable) -> Callable:
     """Специализированный retry для Google Sheets API."""
     from gspread.exceptions import APIError
-    
+
     return exponential_backoff(
         retryable_exceptions=(APIError, RetryableError, ConnectionError, TimeoutError)
     )(func)
@@ -137,20 +138,20 @@ def google_sheets_retry(func: Callable) -> Callable:
 
 def retry_with_backoff(
     max_retries: int = None,
-    retryable_exceptions: Tuple[Type[Exception], ...] = None
+    retryable_exceptions: tuple[type[Exception], ...] = None
 ) -> Callable:
     """Упрощенный retry декоратор для общих случаев."""
-    
+
     if retryable_exceptions is None:
         import httpx
         retryable_exceptions = (
-            httpx.RequestError, 
+            httpx.RequestError,
             httpx.TimeoutException,
             RetryableError,
             ConnectionError,
             TimeoutError
         )
-    
+
     return exponential_backoff(
         max_retries=max_retries,
         retryable_exceptions=retryable_exceptions
