@@ -278,10 +278,13 @@ class SchedulerRunner:
 
         jobs_info = []
         for job in self.scheduler.get_jobs():
+            next_run = None
+            if hasattr(job, 'next_run_time') and job.next_run_time:
+                next_run = job.next_run_time.isoformat()
             jobs_info.append({
                 "id": job.id,
                 "name": job.name,
-                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                "next_run": next_run,
                 "trigger": str(job.trigger)
             })
 
@@ -359,7 +362,9 @@ class SchedulerRunner:
         logger.info("Scheduled jobs overview:")
 
         for job in self.scheduler.get_jobs():
-            next_run = job.next_run_time.strftime('%d.%m.%Y %H:%M:%S') if job.next_run_time else "Not scheduled"
+            next_run = "Not scheduled"
+            if hasattr(job, 'next_run_time') and job.next_run_time:
+                next_run = job.next_run_time.strftime('%d.%m.%Y %H:%M:%S')
             logger.info(
                 f"  {job.id}: {job.name}",
                 trigger=str(job.trigger),
