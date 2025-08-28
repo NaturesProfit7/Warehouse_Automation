@@ -3,7 +3,11 @@
 
 import asyncio
 import sys
+import os
 from datetime import datetime
+
+# Добавляем путь к модулям
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.integrations.sheets import get_sheets_client
 from src.core.models import CurrentStock
