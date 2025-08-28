@@ -190,13 +190,13 @@ async def simple_health_server():
     app.router.add_get('/health', health_check)
     app.router.add_get('/', health_check)  # root тоже отвечает health
     
-    # Запускаем сервер на порту 8000
+    # Запускаем сервер на порту 9001
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    site = web.TCPSite(runner, '0.0.0.0', 9001)
     await site.start()
     
-    logger.info("Health check server started on http://0.0.0.0:8000")
+    logger.info("Health check server started on http://0.0.0.0:9001")
     return runner
 
 

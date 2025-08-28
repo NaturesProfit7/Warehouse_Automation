@@ -307,7 +307,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "src.webhook.app:app",
         host="0.0.0.0",
-        port=8000,
+        port=9000,
         reload=settings.DEBUG,
         log_level="debug" if settings.DEBUG else "info"
     )

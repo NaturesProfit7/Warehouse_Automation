@@ -1,15 +1,13 @@
 version: '3.8'
 
 services:
-  warehouse-bot:
+  # Telegram bot + планировщик уведомлений
+  telegram-bot:
     build: .
-    container_name: warehouse-automation
+    container_name: warehouse-telegram-bot
     restart: unless-stopped
+    command: ["python", "main_with_scheduler.py"]
     environment:
-      # KeyCRM интеграция
-      - KEYCRM_API_TOKEN=${KEYCRM_API_TOKEN}
-      - KEYCRM_WEBHOOK_SECRET=${KEYCRM_WEBHOOK_SECRET}
-      
       # Google Sheets
       - GSHEETS_ID=${GSHEETS_ID}
       - GOOGLE_CREDENTIALS_JSON=${GOOGLE_CREDENTIALS_JSON}
@@ -19,6 +17,56 @@ services:
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
       - TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
       - TELEGRAM_ADMIN_USERS=${TELEGRAM_ADMIN_USERS}
+      
+      # Параметры планирования
+      - LEAD_TIME_DAYS=${LEAD_TIME_DAYS:-14}
+      - SCRAP_PCT=${SCRAP_PCT:-0.05}
+      - TARGET_COVER_DAYS=${TARGET_COVER_DAYS:-14}
+      - MIN_STOCK_DEFAULT=${MIN_STOCK_DEFAULT:-100}
+      - PAR_STOCK_DEFAULT=${PAR_STOCK_DEFAULT:-300}
+      
+      # Технические параметры
+      - TIMEZONE=${TIMEZONE:-Europe/Kyiv}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG=${DEBUG:-false}
+    
+    ports:
+      - "9001:9001"  # Health check для telegram bot
+    
+    volumes:
+      - ./logs/telegram:/app/logs:rw
+      - ./data:/app/data:rw
+    
+    networks:
+      - warehouse-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/health", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  # KeyCRM webhook сервер
+  webhook-server:
+    build: .
+    container_name: warehouse-webhook-server
+    restart: unless-stopped
+    command: ["python", "-m", "uvicorn", "src.webhook.app:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      # KeyCRM интеграция
+      - KEYCRM_API_TOKEN=${KEYCRM_API_TOKEN}
+      - KEYCRM_WEBHOOK_SECRET=${KEYCRM_WEBHOOK_SECRET}
+      
+      # Google Sheets
+      - GSHEETS_ID=${GSHEETS_ID}
+      - GOOGLE_CREDENTIALS_JSON=${GOOGLE_CREDENTIALS_JSON}
       
       # Webhook endpoint
       - WEBHOOK_ENDPOINT=${WEBHOOK_ENDPOINT}
@@ -36,17 +84,17 @@ services:
       - DEBUG=${DEBUG:-false}
     
     ports:
-      - "8000:8000"
+      - "9000:9000"  # KeyCRM webhook endpoint
     
     volumes:
-      - ./logs:/app/logs:rw
+      - ./logs/webhook:/app/logs:rw
       - ./data:/app/data:rw
     
     networks:
       - warehouse-network
     
     healthcheck:
-      test: ["CMD", "python", "-c", "import asyncio; print('Health check passed')"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health", "||", "exit", "1"]
       interval: 30s
       timeout: 10s
       retries: 3
