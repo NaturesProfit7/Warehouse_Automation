@@ -5,6 +5,7 @@ import asyncio
 import logging
 import signal
 from typing import Optional
+from datetime import datetime
 
 from src.bot import create_bot
 from src.services.scheduler_service import get_scheduler_service
@@ -22,6 +23,30 @@ class WarehouseApp:
         self.dp = None
         self.scheduler = None
         self.running = False
+        self.start_time = datetime.now()
+    
+    def get_health_status(self) -> dict:
+        """Получение статуса здоровья системы для мониторинга."""
+        try:
+            uptime_seconds = (datetime.now() - self.start_time).total_seconds()
+            
+            return {
+                "status": "healthy" if self.running else "starting",
+                "uptime_seconds": uptime_seconds,
+                "timestamp": datetime.now().isoformat(),
+                "components": {
+                    "bot": "running" if self.bot else "stopped",
+                    "scheduler": "running" if self.scheduler and self.scheduler._running else "stopped",
+                    "dispatcher": "running" if self.dp else "stopped"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting health status: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
         
     async def start(self):
         """Запуск всех компонентов системы."""
@@ -30,7 +55,7 @@ class WarehouseApp:
             
             # Создаем бота
             logger.info("Initializing Telegram bot...")
-            self.bot, self.dp = await create_bot()
+            self.bot, self.dp = create_bot()
             
             # Устанавливаем команды
             await self._set_bot_commands()
@@ -139,8 +164,45 @@ class WarehouseApp:
             logger.error(f"Failed to send startup notifications: {e}")
 
 
+# Глобальная переменная для доступа к приложению из health endpoint
+warehouse_app_instance = None
+
+
+async def simple_health_server():
+    """Простой HTTP сервер для health checks."""
+    from aiohttp import web
+    
+    async def health_check(request):
+        """Endpoint для проверки здоровья."""
+        if warehouse_app_instance:
+            health_data = warehouse_app_instance.get_health_status()
+            status = 200 if health_data.get("status") in ["healthy", "starting"] else 503
+            return web.json_response(health_data, status=status)
+        else:
+            return web.json_response({
+                "status": "error",
+                "error": "Application not initialized",
+                "timestamp": datetime.now().isoformat()
+            }, status=503)
+    
+    # Создаем веб-приложение
+    app = web.Application()
+    app.router.add_get('/health', health_check)
+    app.router.add_get('/', health_check)  # root тоже отвечает health
+    
+    # Запускаем сервер на порту 8000
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    
+    logger.info("Health check server started on http://0.0.0.0:8000")
+    return runner
+
+
 async def main():
     """Основная функция запуска."""
+    global warehouse_app_instance
     
     # Настройка логирования
     logging.basicConfig(
@@ -148,8 +210,12 @@ async def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
+    # Запускаем health check сервер
+    health_runner = await simple_health_server()
+    
     # Создаем приложение
     app = WarehouseApp()
+    warehouse_app_instance = app  # Сохраняем для health endpoint
     
     # Обработка сигналов для корректного завершения
     def signal_handler(sig, frame):
@@ -170,6 +236,9 @@ async def main():
         raise
     finally:
         await app.stop()
+        # Останавливаем health сервер
+        if health_runner:
+            await health_runner.cleanup()
 
 
 if __name__ == "__main__":

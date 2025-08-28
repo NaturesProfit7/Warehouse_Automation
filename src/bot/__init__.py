@@ -16,7 +16,7 @@ from .middleware import AuthMiddleware, LoggingMiddleware, StateMiddleware
 logger = get_logger(__name__)
 
 
-async def create_bot() -> tuple[Bot, Dispatcher]:
+def create_bot() -> tuple[Bot, Dispatcher]:
     """Создание и настройка бота."""
 
     # Создаем бота с новым API aiogram 3.7+
@@ -50,7 +50,7 @@ async def start_polling():
     """Запуск бота в режиме polling."""
 
     try:
-        bot, dp = await create_bot()
+        bot, dp = create_bot()
 
         # Устанавливаем команды бота
         from aiogram.types import BotCommand
