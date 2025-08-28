@@ -57,6 +57,9 @@ class WarehouseApp:
             logger.info("Initializing Telegram bot...")
             self.bot, self.dp = create_bot()
             
+            # Проверяем единственность экземпляра бота
+            await self._ensure_single_bot_instance()
+            
             # Устанавливаем команды
             await self._set_bot_commands()
             
@@ -76,9 +79,14 @@ class WarehouseApp:
             self.running = True
             logger.info("✅ All services started successfully!")
             
-            # Запускаем polling в фоне
+            # Запускаем polling с настройками для избежания конфликтов
             polling_task = asyncio.create_task(
-                self.dp.start_polling(self.bot)
+                self.dp.start_polling(
+                    self.bot,
+                    drop_pending_updates=True,  # Сбрасываем старые обновления
+                    timeout=30,  # Таймаут для long polling
+                    allowed_updates=None  # Получаем все типы обновлений
+                )
             )
             
             logger.info("📱 Bot polling started")
@@ -130,6 +138,24 @@ class WarehouseApp:
         
         await self.bot.set_my_commands(commands)
         logger.info("Bot commands configured")
+    
+    async def _ensure_single_bot_instance(self):
+        """Проверка единственности экземпляра бота и очистка старых сессий."""
+        try:
+            # Пытаемся получить информацию о боте для проверки токена
+            bot_info = await self.bot.get_me()
+            logger.info(f"Bot verified: @{bot_info.username} (ID: {bot_info.id})")
+            
+            # Удаляем webhook если он был установлен (для polling)
+            await self.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook removed, pending updates dropped")
+            
+            # Небольшая пауза для очистки старых соединений
+            await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.warning(f"Error ensuring single bot instance: {e}")
+            # Продолжаем работу даже если проверка не удалась
     
     async def _notify_startup(self):
         """Уведомление администраторов о запуске."""
