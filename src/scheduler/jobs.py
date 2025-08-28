@@ -244,6 +244,84 @@ class ScheduledJobs:
         except Exception as e:
             logger.error("Data cleanup failed", job_id=job_id, error=str(e))
 
+    async def check_stock_levels(self):
+        """
+        Комбинированная проверка остатков: критичные (красные) и низкие (желтые).
+        Выполняется 3 раза в день: 10:00, 15:00, 21:00.
+        """
+
+        job_id = f"stock_check_{datetime.now().strftime('%H%M%S')}"
+
+        try:
+            logger.info("Starting stock levels check", job_id=job_id)
+
+            # Получаем текущие данные
+            current_stocks = await self.stock_service.get_all_current_stock()
+            master_blanks = self.sheets_client.get_master_blanks()
+
+            if not current_stocks or not master_blanks:
+                logger.warning("No stock data available for check", job_id=job_id)
+                return
+
+            # Анализируем остатки
+            critical_items = []  # Красные: < MIN_STOCK * 0.5
+            low_items = []       # Желтые: < MIN_STOCK но >= MIN_STOCK * 0.5
+            normal_count = 0
+
+            for stock in current_stocks:
+                # Находим соответствующую заготовку в справочнике
+                blank = next((b for b in master_blanks if b['blank_sku'] == stock.blank_sku), None)
+                if not blank or not blank.get('active', True):
+                    continue
+
+                min_stock = blank.get('MIN_STOCK', 100)
+                on_hand = stock.on_hand
+
+                if on_hand < min_stock * 0.5:
+                    # Критичные остатки
+                    critical_items.append({
+                        'sku': stock.blank_sku,
+                        'on_hand': on_hand,
+                        'min_stock': min_stock
+                    })
+                elif on_hand < min_stock:
+                    # Низкие остатки
+                    low_items.append({
+                        'sku': stock.blank_sku,
+                        'on_hand': on_hand,
+                        'min_stock': min_stock
+                    })
+                else:
+                    normal_count += 1
+
+            # Отправляем уведомление только если есть проблемы
+            if critical_items or low_items:
+                await self._send_combined_stock_alert(critical_items, low_items, normal_count)
+                logger.info(
+                    "Stock alert sent",
+                    job_id=job_id,
+                    critical_count=len(critical_items),
+                    low_count=len(low_items),
+                    normal_count=normal_count
+                )
+            else:
+                logger.info("All stock levels are normal", job_id=job_id, total_skus=normal_count)
+
+        except Exception as e:
+            logger.error(
+                "Stock levels check failed",
+                job_id=job_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+
+            # Отправляем уведомление об ошибке
+            await self._send_error_notification(
+                "Stock Levels Check Failed",
+                str(e),
+                job_id
+            )
+
     async def _update_replenishment_report(self, recommendations: list[ReplenishmentRecommendation]):
         """Обновление отчета пополнения в Google Sheets."""
 
@@ -362,6 +440,89 @@ class ScheduledJobs:
 
         # TODO: Отправка админам через Telegram API
         logger.error("Error notification prepared", title=title, job_id=job_id)
+
+    async def _send_combined_stock_alert(self, critical_items: list, low_items: list, normal_count: int):
+        """Отправка комбинированного уведомления о критических и низких остатках."""
+
+        try:
+            current_time = datetime.now().strftime('%H:%M')
+            message_parts = [f"📦 <b>ПЕРЕВІРКА ЗАЛИШКІВ • {current_time}</b>\n"]
+
+            # Критичные остатки (красные)
+            if critical_items:
+                message_parts.append("🔴 <b>Критично (потребують негайних дій):</b>")
+                for item in critical_items[:10]:  # Максимум 10 позиций
+                    sku_display = self._format_sku_for_message(item['sku'])
+                    message_parts.append(f"• {sku_display}: {item['on_hand']}/{item['min_stock']} шт")
+                
+                if len(critical_items) > 10:
+                    message_parts.append(f"... та ще {len(critical_items) - 10} позицій")
+                message_parts.append("")
+
+            # Низкие остатки (желтые)
+            if low_items:
+                message_parts.append("🟡 <b>Низькі залишки (потрібно замовити):</b>")
+                for item in low_items[:10]:  # Максимум 10 позиций
+                    sku_display = self._format_sku_for_message(item['sku'])
+                    message_parts.append(f"• {sku_display}: {item['on_hand']}/{item['min_stock']} шт")
+                
+                if len(low_items) > 10:
+                    message_parts.append(f"... та ще {len(low_items) - 10} позицій")
+                message_parts.append("")
+
+            # Статистика
+            if normal_count > 0:
+                message_parts.append(f"✅ <b>В нормі:</b> {normal_count} позицій")
+
+            # Итоговая информация
+            total_problems = len(critical_items) + len(low_items)
+            if total_problems > 0:
+                message_parts.append(f"\n📊 <b>Загалом проблемних позицій:</b> {total_problems}")
+                message_parts.append("💡 Використовуйте /analytics для детального аналізу")
+
+            message = "\n".join(message_parts)
+
+            # TODO: Отправка через Telegram API
+            logger.info(
+                "Combined stock alert prepared",
+                message_length=len(message),
+                critical_items=len(critical_items),
+                low_items=len(low_items),
+                normal_count=normal_count
+            )
+
+        except Exception as e:
+            logger.error("Failed to prepare combined stock alert", error=str(e))
+
+    def _format_sku_for_message(self, sku: str) -> str:
+        """Форматирование SKU для красивого отображения в сообщении."""
+
+        parts = sku.split('-')
+        if len(parts) != 4:
+            return sku
+
+        _, sku_type, size, color = parts
+
+        # Маппинг типов
+        type_mapping = {
+            "BONE": "🦴 Кістка",
+            "RING": "🟢 Бублик", 
+            "ROUND": "⚪ Круглий",
+            "HEART": "❤️ Серце",
+            "FLOWER": "🌸 Квітка",
+            "CLOUD": "☁️ Хмарка"
+        }
+
+        # Маппинг цветов
+        color_mapping = {
+            "GLD": "🟡",
+            "SIL": "⚪"
+        }
+
+        type_display = type_mapping.get(sku_type, sku_type)
+        color_display = color_mapping.get(color, color)
+
+        return f"{type_display} {size}мм {color_display}"
 
 
 # Глобальный экземпляр задач

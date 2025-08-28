@@ -568,6 +568,87 @@ class GoogleSheetsClient:
             logger.error("Failed to add unmapped items", error=str(e))
             raise GoogleSheetsError(f"Failed to add unmapped items: {e}")
 
+    @google_sheets_retry
+    def clear_worksheet_data(self, worksheet_name: str) -> bool:
+        """Очистка данных листа (оставляет только заголовки).
+        
+        Args:
+            worksheet_name: Название листа для очистки
+            
+        Returns:
+            bool: True если очистка прошла успешно
+        """
+        try:
+            worksheet = self._get_worksheet(worksheet_name)
+            
+            # Получаем все данные
+            all_values = worksheet.get_all_values()
+            if not all_values:
+                logger.info(f"Worksheet {worksheet_name} is already empty")
+                return True
+                
+            # Если есть только заголовки, ничего не делаем
+            if len(all_values) <= 1:
+                logger.info(f"Worksheet {worksheet_name} has only headers, skipping")
+                return True
+                
+            # Сохраняем заголовки (первая строка)
+            headers = all_values[0] if all_values else []
+            
+            # Очищаем лист полностью
+            worksheet.clear()
+            
+            # Восстанавливаем заголовки если они были
+            if headers:
+                worksheet.update('A1', [headers])
+                logger.info(f"Cleared {worksheet_name} (kept {len(headers)} headers, removed {len(all_values)-1} rows)")
+            else:
+                logger.info(f"Cleared {worksheet_name} completely")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to clear worksheet {worksheet_name}", error=str(e))
+            raise GoogleSheetsError(f"Failed to clear worksheet {worksheet_name}: {e}")
+
+    def clear_data_sheets(self) -> dict[str, bool]:
+        """Очистка всех листов с данными перед деплоем.
+        
+        Очищает: Movements, Current_Stock, Audit_Log, Analytics_Dashboard
+        Оставляет: Master_Blanks, Mapping, Config, Unmapped_Items, Replenishment_Report
+        
+        Returns:
+            dict[str, bool]: Результат очистки по каждому листу
+        """
+        sheets_to_clear = [
+            "Movements",
+            "Current_Stock", 
+            "Audit_Log",
+            "Analytics_Dashboard"
+        ]
+        
+        results = {}
+        cleared_count = 0
+        
+        logger.info(f"Starting cleanup of {len(sheets_to_clear)} data sheets")
+        
+        for sheet_name in sheets_to_clear:
+            try:
+                result = self.clear_worksheet_data(sheet_name)
+                results[sheet_name] = result
+                if result:
+                    cleared_count += 1
+            except Exception as e:
+                logger.error(f"Failed to clear {sheet_name}", error=str(e))
+                results[sheet_name] = False
+                
+        logger.info(
+            f"Data sheets cleanup completed: {cleared_count}/{len(sheets_to_clear)} sheets cleared",
+            results=results
+        )
+        
+        return results
+
 
 # Создаем alias для обратной совместимости
 SheetsClient = GoogleSheetsClient

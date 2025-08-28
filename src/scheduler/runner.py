@@ -52,12 +52,12 @@ class SchedulerRunner:
         """Добавление всех запланированных задач."""
 
         try:
-            # Ежедневный расчет остатков (20:00)
+            # Ежедневный расчет остатков (21:01)
             self.scheduler.add_job(
                 func=self.scheduled_jobs.daily_stock_calculation,
                 trigger=CronTrigger(
-                    hour=20,
-                    minute=0,
+                    hour=21,
+                    minute=1,
                     timezone=settings.TIMEZONE
                 ),
                 id='daily_stock_calculation',
@@ -93,13 +93,55 @@ class SchedulerRunner:
                 max_instances=1
             )
 
-            # Еженедельный аналитический отчет (понедельник 09:00)
+            # Комбинированные уведомления о остатках (10:00)
+            self.scheduler.add_job(
+                func=self.scheduled_jobs.check_stock_levels,
+                trigger=CronTrigger(
+                    hour=10,
+                    minute=0,
+                    timezone=settings.TIMEZONE
+                ),
+                id='stock_check_morning',
+                name='Stock Check - Morning',
+                replace_existing=True,
+                max_instances=1
+            )
+
+            # Комбинированные уведомления о остатках (15:00)
+            self.scheduler.add_job(
+                func=self.scheduled_jobs.check_stock_levels,
+                trigger=CronTrigger(
+                    hour=15,
+                    minute=0,
+                    timezone=settings.TIMEZONE
+                ),
+                id='stock_check_afternoon',
+                name='Stock Check - Afternoon',
+                replace_existing=True,
+                max_instances=1
+            )
+
+            # Комбинированные уведомления о остатках (21:00)
+            self.scheduler.add_job(
+                func=self.scheduled_jobs.check_stock_levels,
+                trigger=CronTrigger(
+                    hour=21,
+                    minute=0,
+                    timezone=settings.TIMEZONE
+                ),
+                id='stock_check_evening',
+                name='Stock Check - Evening',
+                replace_existing=True,
+                max_instances=1
+            )
+
+            # Еженедельный аналитический отчет (понедельник 10:30)
             self.scheduler.add_job(
                 func=self.scheduled_jobs.weekly_analytics_report,
                 trigger=CronTrigger(
                     day_of_week='mon',
-                    hour=9,
-                    minute=0,
+                    hour=10,
+                    minute=30,
                     timezone=settings.TIMEZONE
                 ),
                 id='weekly_analytics',
@@ -274,6 +316,8 @@ class SchedulerRunner:
                 await self.scheduled_jobs.weekly_analytics_report()
             elif job_id == 'cleanup_old_data':
                 await self.scheduled_jobs.cleanup_old_data()
+            elif job_id in ['stock_check_morning', 'stock_check_afternoon', 'stock_check_evening']:
+                await self.scheduled_jobs.check_stock_levels()
             else:
                 raise ValueError(f"Unknown job: {job_id}")
 
@@ -335,8 +379,10 @@ class SchedulerRunner:
                 f"⏰ <b>Планировщик запущено</b>\n\n"
                 f"✅ Автоматичні завдання активні\n"
                 f"🕐 Часовий пояс: {settings.TIMEZONE}\n"
-                f"📊 Розрахунок залишків: {settings.DAILY_REPORT_TIME}\n"
-                f"🔄 Синхронізація даних: {settings.DAILY_SYNC_TIME}\n\n"
+                f"📦 Перевірка залишків: 10:00, 15:00, 21:00\n"
+                f"📊 Щоденний розрахунок: 21:01\n"
+                f"🔄 Синхронізація даних: {settings.DAILY_SYNC_TIME}\n"
+                f"📈 Тижнева аналітика: Пн 10:30\n\n"
                 f"Система готова до роботи."
             )
 

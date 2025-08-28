@@ -9,15 +9,15 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
 
     buttons = [
         [
-            InlineKeyboardButton(text="➕ Приход", callback_data="receipt"),
-            InlineKeyboardButton(text="📦 Остатки", callback_data="stock")
+            InlineKeyboardButton(text="➕ Поставка", callback_data="receipt"),
+            InlineKeyboardButton(text="📦 Залишки", callback_data="stock")
         ],
         [
-            InlineKeyboardButton(text="📊 Отчет", callback_data="report"),
-            InlineKeyboardButton(text="⚙️ Коррекция", callback_data="correction")
+            InlineKeyboardButton(text="📊 Звіт", callback_data="report"),
+            InlineKeyboardButton(text="⚙️ Коригування", callback_data="correction")
         ],
         [
-            InlineKeyboardButton(text="📈 Аналитика", callback_data="analytics")
+            InlineKeyboardButton(text="📈 Аналітика", callback_data="analytics")
         ]
     ]
 

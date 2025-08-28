@@ -198,7 +198,7 @@ class NotificationService:
             # Добавляем топ критичных если есть
             if critical_count > 0:
                 critical_items = [r for r in recommendations if r.urgency == UrgencyLevel.CRITICAL]
-                summary += "\n\n🚨 <b>Критичные остатки:</b>"
+                summary += "\n\n🚨 <b>Критичні залишки:</b>"
                 
                 for item in critical_items[:5]:  # Показываем только топ 5
                     summary += f"\n• {item.blank_sku}: {item.on_hand} шт"

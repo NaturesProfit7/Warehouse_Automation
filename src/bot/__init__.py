@@ -57,8 +57,8 @@ async def start_polling():
 
         commands = [
             BotCommand(command="start", description="Головне меню"),
-            BotCommand(command="receipt", description="Додати приход"),
-            BotCommand(command="report", description="Звіт по залишках"),
+            BotCommand(command="receipt", description="Додати поставку"),
+            BotCommand(command="report", description="Звіт по залишкам"),
             BotCommand(command="health", description="Статус системи"),
             BotCommand(command="help", description="Довідка"),
             BotCommand(command="cancel", description="Скасувати операцію")

@@ -245,7 +245,7 @@ async def callback_notifications_status(callback: CallbackQuery):
 async def callback_test_critical_alert(callback: CallbackQuery):
     """Тестовая проверка критичных остатков."""
     try:
-        await callback.answer("🔍 Проверяю критичные остатки...")
+        await callback.answer("🔍 Перевіряю критичні залишки...")
         
         notification_service = get_notification_service()
         alert = await notification_service.check_critical_stock()
@@ -254,7 +254,7 @@ async def callback_test_critical_alert(callback: CallbackQuery):
             await notification_service.send_telegram_alert(alert)
             await callback.message.reply("✅ Тест выполнен. Уведомление отправлено.")
         else:
-            await callback.message.reply("ℹ️ Критичных остатков не обнаружено.")
+            await callback.message.reply("ℹ️ Критичних залишків не виявлено.")
             
     except Exception as e:
         logger.error("Failed to test critical alert", error=str(e))

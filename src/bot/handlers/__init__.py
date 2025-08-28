@@ -52,10 +52,10 @@ async def cmd_start(message: Message, user_info: dict[str, Any]) -> None:
         f"🏭 <b>Привіт, {user_name}!</b>\n\n"
         f"Я допоможу тобі керувати залишками заготовок для адресників.\n\n"
         f"📋 <b>Доступні функції:</b>\n"
-        f"• ➕ <b>Приход</b> — додавання нових заготовок\n"
-        f"• 📦 <b>Остатки</b> — перегляд поточних залишків\n"
-        f"• 📊 <b>Отчет</b> — звіти по складу\n"
-        f"• ⚙️ <b>Коррекция</b> — виправлення залишків\n\n"
+        f"• ➕ <b>Поставка</b> — додавання нових заготовок\n"
+        f"• 📦 <b>Залишки</b> — перегляд поточних залишків\n"
+        f"• 📊 <b>Звіт</b> — звіти по складу\n"
+        f"• ⚙️ <b>Коригування</b> — виправлення залишків\n\n"
         f"Оберіть дію:"
     )
 
@@ -76,8 +76,8 @@ async def cmd_help(message: Message) -> None:
         "🆘 <b>Довідка по командам</b>\n\n"
         "📋 <b>Основні команди:</b>\n"
         "• /start — головне меню\n"
-        "• /receipt — швидкий додаток приходу\n"
-        "• /report — швидкий звіт по залишках\n"
+        "• /receipt — швидкий додаток поставки\n"
+        "• /report — швидкий звіт по залишкам\n"
         "• /cancel — скасувати поточну операцію\n"
         "• /help — ця довідка\n\n"
         "⚙️ <b>Адміністратори:</b>\n"
@@ -128,12 +128,12 @@ async def show_main_menu(callback: CallbackQuery) -> None:
 @router.message(Command("receipt"))
 @router.callback_query(F.data == "receipt")
 async def start_receipt(update, state: FSMContext) -> None:
-    """Начало процесса добавления прихода."""
+    """Начало процесса добавления поставки."""
 
     await state.set_state(ReceiptStates.waiting_for_type)
 
     text = (
-        "➕ <b>Додавання приходу заготовок</b>\n\n"
+        "➕ <b>Додавання поставки заготовок</b>\n\n"
         "Оберіть тип заготовки:"
     )
 
@@ -256,7 +256,7 @@ async def process_blank_color(callback: CallbackQuery, state: FSMContext) -> Non
             f"{instruction}"
         )
     else:
-        # Это обычный приход
+        # Это обычная поставка
         await state.set_state(ReceiptStates.waiting_for_quantity)
         text = (
             f"{color_name}\n\n"
@@ -298,7 +298,7 @@ async def process_quantity_input(message: Message, state: FSMContext) -> None:
             f"⚠️ <b>Велика партія!</b>\n\n"
             f"🏷️ <b>SKU:</b> <code>{sku}</code>\n"
             f"📦 <b>Кількість:</b> {quantity} шт\n\n"
-            f"Підтвердіть додавання приходу:"
+            f"Підтвердіть додавання поставки:"
         )
 
         await message.answer(
@@ -313,7 +313,7 @@ async def process_quantity_input(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(ReceiptStates.waiting_for_confirmation, F.data == "confirm_yes")
 async def confirm_receipt(callback: CallbackQuery, state: FSMContext) -> None:
-    """Подтверждение добавления прихода."""
+    """Подтверждение добавления поставки."""
 
     await _save_receipt(callback.message, state, is_callback=True)
     await callback.answer()
@@ -321,7 +321,7 @@ async def confirm_receipt(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(ReceiptStates.waiting_for_confirmation, F.data == "confirm_no")
 async def decline_receipt(callback: CallbackQuery, state: FSMContext) -> None:
-    """Отклонение добавления прихода."""
+    """Отклонение добавления поставки."""
 
     await state.set_state(ReceiptStates.waiting_for_quantity)
 
@@ -338,7 +338,7 @@ async def decline_receipt(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(Command("report"))
 @router.callback_query(F.data == "report")
 async def show_report_menu(update) -> None:
-    """Показ меню отчетов."""
+    """Показ меню звітів."""
 
     text = "📊 <b>Звіти по складу</b>\n\nОберіть тип звіту:"
 
@@ -355,7 +355,7 @@ async def show_report_menu(update) -> None:
 
 @router.callback_query(F.data.startswith("report_"))
 async def process_report_type(callback: CallbackQuery) -> None:
-    """Обработка выбора типа отчета."""
+    """Обработка выбора типа звіту."""
 
     report_type = callback.data[7:]  # Убираем "report_"
 
@@ -371,7 +371,7 @@ async def process_report_type(callback: CallbackQuery) -> None:
     await callback.answer()
 
     try:
-        # Получаем сервис отчетов
+        # Получаем сервис звітів
         report_service = get_report_service()
         
         if report_type == "short":
@@ -649,7 +649,7 @@ async def select_analytics_period(callback: CallbackQuery, state: FSMContext) ->
 
 @router.callback_query(F.data.startswith("period_"))
 async def process_analytics_period(callback: CallbackQuery, state: FSMContext) -> None:
-    """Обработка выбора периода и генерация отчета."""
+    """Обработка выбора периода и генерация звіту."""
     
     period_str = callback.data.replace("period_", "")
     days = int(period_str)
@@ -663,7 +663,7 @@ async def process_analytics_period(callback: CallbackQuery, state: FSMContext) -
     
     # Показываем индикатор загрузки
     await callback.message.edit_text(
-        "⏳ <b>Генерируем отчет...</b>\n\nЭто может занять несколько секунд",
+        "⏳ <b>Генеруємо звіт...</b>\n\nЦе може зайняти кілька секунд",
         parse_mode="HTML"
     )
     
@@ -698,7 +698,7 @@ async def process_analytics_period(callback: CallbackQuery, state: FSMContext) -
     except Exception as e:
         logger.error("Failed to generate analytics report", error=str(e), type=analytics_type)
         await callback.message.edit_text(
-            f"❌ <b>Ошибка генерации отчета</b>\n\n{str(e)}",
+            f"❌ <b>Помилка генерації звіту</b>\n\n{str(e)}",
             reply_markup=get_analytics_menu_keyboard(),
             parse_mode="HTML"
         )
@@ -707,7 +707,7 @@ async def process_analytics_period(callback: CallbackQuery, state: FSMContext) -
 
 
 def format_top_sales_report(data: dict) -> str:
-    """Форматирование отчета топ продаж."""
+    """Форматирование звіту топ продажів."""
     
     period = data["period_days"]
     top_skus = data["top_skus"]
@@ -738,7 +738,7 @@ def format_top_sales_report(data: dict) -> str:
 
 
 def format_turnover_report(data: dict) -> str:
-    """Форматирование отчета оборачиваемости."""
+    """Форматирование звіту оборотності."""
     
     period = data["period_days"]
     fast_movers = data["fast_movers"]
@@ -831,7 +831,7 @@ async def back_to_type_selection(callback: CallbackQuery, state: FSMContext) -> 
 
     await state.set_state(ReceiptStates.waiting_for_type)
 
-    text = "➕ <b>Додавання приходу заготовок</b>\n\nОберіть тип заготовки:"
+    text = "➕ <b>Додавання поставки заготовок</b>\n\nОберіть тип заготовки:"
 
     await callback.message.edit_text(
         text,
@@ -891,7 +891,7 @@ def _build_sku_from_data(data: dict[str, Any]) -> str:
 
 
 async def _save_receipt(message: Message, state: FSMContext, is_callback: bool = False) -> None:
-    """Сохранение прихода заготовки."""
+    """Сохранение поставки заготовки."""
 
     try:
         data = await state.get_data()
@@ -903,7 +903,7 @@ async def _save_receipt(message: Message, state: FSMContext, is_callback: bool =
         # Получаем сервис управления остатками
         stock_service = get_stock_service()
         
-        # Создаем приходное движение
+        # Создаем движение поставки
         movement = await stock_service.add_receipt_movement(
             blank_sku=sku,
             quantity=quantity,
@@ -992,7 +992,7 @@ async def show_stock_info(callback: CallbackQuery) -> None:
                     grouped_stock[sku_type] = []
                 grouped_stock[sku_type].append(stock)
         
-        # Формируем отчет
+        # Формируем звіт
         report_lines = ["📦 <b>Поточні залишки</b>\n"]
         
         # Статистика
