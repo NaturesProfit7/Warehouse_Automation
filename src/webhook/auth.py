@@ -1,13 +1,12 @@
 """Аутентификация и авторизация webhook запросов."""
 
 import json
-from typing import Dict, Any
+from typing import Any
 
-from fastapi import Request, HTTPException, Depends
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from ..integrations.keycrm import get_keycrm_client
-from ..core.exceptions import WebhookAuthError
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +18,7 @@ security = HTTPBearer(auto_error=False)
 async def verify_webhook_signature(
     request: Request,
     authorization = Depends(security)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Проверка HMAC подписи KeyCRM webhook.
     
@@ -33,14 +32,14 @@ async def verify_webhook_signature(
     Raises:
         HTTPException: При ошибке аутентификации
     """
-    
+
     try:
         # Получение заголовка с подписью
         signature_header = request.headers.get("X-KeyCRM-Signature")
         if not signature_header:
             # Проверяем альтернативные заголовки
             signature_header = request.headers.get("X-Signature")
-            
+
         if not signature_header:
             logger.warning(
                 "Missing signature header",
@@ -51,7 +50,7 @@ async def verify_webhook_signature(
                 status_code=401,
                 detail="Missing signature header"
             )
-        
+
         # Получение тела запроса
         body = await request.body()
         if not body:
@@ -60,11 +59,11 @@ async def verify_webhook_signature(
                 status_code=400,
                 detail="Empty request body"
             )
-        
+
         # Проверка подписи через KeyCRM клиент
         keycrm_client = await get_keycrm_client()
         is_valid = keycrm_client.verify_webhook_signature(body, signature_header)
-        
+
         if not is_valid:
             logger.warning(
                 "Invalid webhook signature",
@@ -76,7 +75,7 @@ async def verify_webhook_signature(
                 status_code=403,
                 detail="Invalid signature"
             )
-        
+
         # Парсинг JSON payload
         try:
             payload = json.loads(body.decode('utf-8'))
@@ -90,7 +89,7 @@ async def verify_webhook_signature(
                 status_code=400,
                 detail="Invalid JSON payload"
             )
-        
+
         # Базовая валидация структуры
         if not isinstance(payload, dict):
             logger.error("Payload is not a dictionary", payload_type=type(payload))
@@ -98,26 +97,26 @@ async def verify_webhook_signature(
                 status_code=400,
                 detail="Payload must be a JSON object"
             )
-        
+
         if "event" not in payload:
             logger.error("Missing event field in payload", payload_keys=list(payload.keys()))
             raise HTTPException(
                 status_code=400,
                 detail="Missing 'event' field in payload"
             )
-        
+
         logger.debug(
             "Webhook signature verified successfully",
-            event=payload.get("event"),
+            webhook_event=payload.get("event"),
             payload_size=len(body)
         )
-        
+
         return payload
-        
+
     except HTTPException:
         # Пробрасываем HTTP исключения как есть
         raise
-        
+
     except Exception as e:
         logger.error(
             "Unexpected error during signature verification",
@@ -130,7 +129,7 @@ async def verify_webhook_signature(
         )
 
 
-async def get_request_info(request: Request) -> Dict[str, Any]:
+async def get_request_info(request: Request) -> dict[str, Any]:
     """
     Извлечение информации о запросе для логирования.
     
@@ -140,7 +139,7 @@ async def get_request_info(request: Request) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Информация о запросе
     """
-    
+
     return {
         "method": request.method,
         "url": str(request.url),
@@ -152,58 +151,74 @@ async def get_request_info(request: Request) -> Dict[str, Any]:
     }
 
 
-def validate_keycrm_event(payload: Dict[str, Any]) -> bool:
+def validate_keycrm_event(payload: dict[str, Any]) -> bool:
     """
-    Валидация события KeyCRM.
+    Валидация события KeyCRM согласно реальной документации.
     
     Args:
         payload: Payload вебхука
         
     Returns:
-        bool: True если событие валидное
+        bool: True если событие нужно обрабатывать
     """
-    
+
     event = payload.get("event", "")
     context = payload.get("context", {})
-    
-    # Проверяем что это событие изменения статуса заказа
-    if event != "order.change_order_status":
-        logger.debug(
-            "Skipping non-order event",
-            event=event
+
+    # Обрабатываем события изменения статуса заказа (реальное имя от KeyCRM)
+    if event == "order.change_order_status":
+        # Списываем заготовки сразу при создании заказа
+        # Логика: заказы добавляются в KeyCRM только после оплаты
+
+        # KeyCRM отправляет статус как status_id или status
+        status_id = context.get("status_id")
+        status_name = context.get("status", "").lower() if context.get("status") else ""
+
+        # В KeyCRM статус "Новый" обычно имеет ID = 1
+        # Обрабатываем заказы в начальных статусах
+        new_status_ids = [1, 2, 3]  # ID для новых/активных заказов
+        new_status_names = ["new", "created", "pending", "active", "новый"]
+
+        should_process = (
+            status_id in new_status_ids or
+            status_name in new_status_names
         )
-        return False
-    
-    # Проверяем что статус изменился на confirmed
-    new_status = context.get("status", "")
-    if new_status != "confirmed":
-        logger.debug(
-            "Skipping non-confirmed status",
-            status=new_status,
-            order_id=context.get("id")
-        )
-        return False
-    
-    # Проверяем наличие order ID
-    order_id = context.get("id")
-    if not order_id:
-        logger.warning(
-            "Missing order ID in context",
-            context=context
-        )
-        return False
-    
-    return True
+
+        if should_process:
+            # Согласно документации KeyCRM использует "id" для ID заказа
+            order_id = context.get("id") or context.get("order_id")
+            if order_id:
+                logger.debug(
+                    "Order created - immediate stock deduction",
+                    webhook_event=event,
+                    status_id=status_id,
+                    status_name=status_name,
+                    order_id=order_id,
+                    reason="Order is paid and created"
+                )
+                return True
+
+    # События оплаты не обрабатываем, так как заказы добавляются уже оплаченными
+    # и списание происходит при создании заказа
+
+    # Логируем отклоненные события для отладки
+    logger.debug(
+        "Skipping event - not relevant for stock management",
+        webhook_event=event,
+        context_keys=list(context.keys()) if context else []
+    )
+
+    return False
 
 
 class WebhookRateLimiter:
     """Простой rate limiter для webhook запросов."""
-    
+
     def __init__(self, max_requests: int = 100, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._requests = {}  # IP -> список timestamps
-    
+
     def is_allowed(self, client_ip: str) -> bool:
         """
         Проверка допустимости запроса.
@@ -214,21 +229,21 @@ class WebhookRateLimiter:
         Returns:
             bool: True если запрос допустим
         """
-        
+
         import time
-        
+
         now = time.time()
-        
+
         # Инициализируем список для IP если его нет
         if client_ip not in self._requests:
             self._requests[client_ip] = []
-        
+
         # Удаляем старые запросы
         self._requests[client_ip] = [
             timestamp for timestamp in self._requests[client_ip]
             if now - timestamp < self.window_seconds
         ]
-        
+
         # Проверяем лимит
         if len(self._requests[client_ip]) >= self.max_requests:
             logger.warning(
@@ -238,7 +253,7 @@ class WebhookRateLimiter:
                 limit=self.max_requests
             )
             return False
-        
+
         # Добавляем текущий запрос
         self._requests[client_ip].append(now)
         return True
@@ -258,9 +273,9 @@ async def check_rate_limit(request: Request):
     Raises:
         HTTPException: При превышении лимита
     """
-    
+
     client_ip = request.client.host if request.client else "unknown"
-    
+
     if not rate_limiter.is_allowed(client_ip):
         raise HTTPException(
             status_code=429,

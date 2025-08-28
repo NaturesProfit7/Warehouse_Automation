@@ -1,401 +1,304 @@
-# 🚀 Инструкция по развертыванию системы автоматизации склада
+# 🚀 Полное руководство по деплою Warehouse Automation System
 
-## 📋 Предварительные требования
+## 📋 Содержание
+1. [Подготовка VPS Ubuntu](#1-подготовка-vps-ubuntu)
+2. [Настройка поддомена и SSL](#2-настройка-поддомена-и-ssl)
+3. [Установка Docker и зависимостей](#3-установка-docker-и-зависимостей)
+4. [Настройка GitHub Actions (CI/CD)](#4-настройка-github-actions-cicd)
+5. [Конфигурация переменных окружения](#5-конфигурация-переменных-окружения)
+6. [Первоначальный деплой](#6-первоначальный-деплой)
+7. [Мониторинг и управление](#7-мониторинг-и-управление)
 
-### Системные требования
-- Python 3.11+ 
-- Git
-- Доступ к интернету для установки пакетов
+---
 
-### Необходимые сервисы
-- Google Sheets API доступ
-- KeyCRM API токен
-- Telegram Bot токен
+## 1. Подготовка VPS Ubuntu
 
-## 🔧 Установка и настройка
+### 1.1. Минимальные требования
+- **ОС**: Ubuntu 20.04 LTS или новее
+- **RAM**: 1GB (рекомендуется 2GB)
+- **Диск**: 10GB свободного места
+- **CPU**: 1 core (рекомендуется 2 cores)
 
-### 1. Клонирование репозитория
-
+### 1.2. Подключение к серверу
 ```bash
-git clone https://github.com/NaturesProfit7/Warehouse_Automation.git
-cd Warehouse_Automation
+# Подключение по SSH (замените на ваши данные)
+ssh root@YOUR_SERVER_IP
 ```
 
-### 2. Создание виртуального окружения
-
+### 1.3. Обновление системы
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# или
-venv\Scripts\activate     # Windows
+# Обновление пакетов
+sudo apt update && sudo apt upgrade -y
+
+# Установка базовых утилит
+sudo apt install -y curl wget git unzip software-properties-common
 ```
 
-### 3. Установка зависимостей
+---
 
+## 2. Настройка поддомена и SSL
+
+### 2.1. Настройка DNS записи
+**У вашего DNS провайдера:**
+1. Добавьте A-запись:
+   ```
+   Тип: A
+   Имя: blanks (или warehouse)
+   Значение: YOUR_SERVER_IP
+   TTL: Auto
+   ```
+
+### 2.2. Установка Nginx
 ```bash
-pip install -r requirements.txt
+# Установка Nginx
+sudo apt install -y nginx
+
+# Создание конфигурации
+sudo nano /etc/nginx/sites-available/warehouse
 ```
 
-### 4. Быстрый тест системы
-
-```bash
-python3 scripts/test_system.py
-```
-
-Этот скрипт проверит:
-- ✅ Структуру проекта
-- ✅ Базовую функциональность
-- ✅ Синтаксис всех файлов
-- ✅ Импорты модулей
-
-## ⚙️ Настройка конфигурации
-
-### 1. Создание .env файла
-
-Скопируйте `.env.example` в `.env`:
-
-```bash
-cp .env.example .env
-```
-
-### 2. Заполнение переменных окружения
-
-```env
-# KeyCRM Integration
-KEYCRM_API_URL=https://api.keycrm.app
-KEYCRM_API_TOKEN=your_keycrm_token_here
-KEYCRM_WEBHOOK_SECRET=your_webhook_secret
-
-# Google Sheets
-GSHEETS_ID=your_google_sheet_id
-GOOGLE_CREDENTIALS_JSON={"type":"service_account",...}
-
-# Telegram Bot
-TELEGRAM_BOT_TOKEN=123:ABC-your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-TELEGRAM_ADMIN_USERS=user_id_1,user_id_2
-
-# Stock Management Settings
-LEAD_TIME_DAYS=14
-SCRAP_PCT=0.05
-TARGET_COVER_DAYS=30
-```
-
-## 🔑 Получение токенов и доступов
-
-### Google Sheets API
-
-1. Перейдите в [Google Cloud Console](https://console.cloud.google.com/)
-2. Создайте новый проект или выберите существующий
-3. Включите Google Sheets API
-4. Создайте Service Account
-5. Скачайте JSON-ключ
-6. Вставьте содержимое JSON в `GOOGLE_CREDENTIALS_JSON`
-7. Поделитесь таблицей с email из service account
-
-### KeyCRM API
-
-1. Войдите в административную панель KeyCRM
-2. Перейдите в раздел API
-3. Создайте новый API токен
-4. Настройте webhook на ваш сервер: `https://yourdomain.com/webhook/keycrm`
-
-### Telegram Bot
-
-1. Напишите [@BotFather](https://t.me/botfather)
-2. Создайте нового бота командой `/newbot`
-3. Получите токен бота
-4. Узнайте ваш chat_id (можно через [@userinfobot](https://t.me/userinfobot))
-
-## 🏃‍♂️ Запуск системы
-
-### Режим разработки
-
-```bash
-# Запуск компонентов по отдельности
-
-# 1. Webhook сервер (FastAPI)
-uvicorn src.webhook.app:app --host 0.0.0.0 --port 8000 --reload
-
-# 2. Telegram бот
-python3 -m src.bot
-
-# 3. Планировщик задач
-python3 -m src.scheduler.runner
-```
-
-### Продакшн режим
-
-```bash
-# Используйте Docker Compose
-docker-compose up -d
-```
-
-### Проверка работы
-
-```bash
-# Проверка webhook
-curl -X GET http://localhost:8000/health
-
-# Проверка готовности
-curl -X GET http://localhost:8000/ready
-```
-
-## 🧪 Тестирование
-
-### Запуск всех тестов
-
-```bash
-# Базовые тесты (без внешних зависимостей)
-pytest tests/test_basic.py -v
-
-# Все unit тесты  
-pytest tests/ -v
-
-# Комплексный тест системы
-python3 scripts/test_system.py
-```
-
-### Тестирование компонентов
-
-```bash
-# Тест конфигурации
-python3 -c "from src.config import settings; print('Config OK')"
-
-# Тест Telegram бота (эхо)
-python3 -c "from src.bot import create_bot; print('Bot OK')"
-
-# Тест калькулятора остатков
-python3 -c "from src.core.calculations import get_stock_calculator; print('Calculator OK')"
-```
-
-## 🔧 Настройка Google Sheets
-
-### Структура листов
-
-Создайте следующие листы в Google Sheets:
-
-1. **CurrentStock** - текущие остатки
-   - Колонки: `blank_sku`, `on_hand`, `reserved`, `available`, `avg_daily_usage`, `last_updated`
-
-2. **MasterBlanks** - справочник заготовок  
-   - Колонки: `blank_sku`, `type`, `size_mm`, `color`, `name_ua`, `min_stock`, `par_stock`, `active`
-
-3. **Movements** - движения товаров
-   - Колонки: `id`, `blank_sku`, `type`, `source_type`, `qty`, `balance_after`, `order_id`, `user`, `note`, `timestamp`
-
-4. **ProductMappings** - маппинг товаров KeyCRM → SKU
-   - Колонки: `product_name`, `size_property`, `metal_color`, `blank_sku`, `qty_per_unit`, `active`, `priority`
-
-5. **UnmappedItems** - немапленые товары
-   - Колонки: `order_id`, `product_name`, `quantity`, `properties`, `created_at`
-
-### Пример данных
-
-**MasterBlanks:**
-```
-blank_sku          | type | size_mm | color | name_ua            | min_stock | par_stock | active
-BLK-RING-25-GLD   | RING | 25      | GLD   | бублик 25мм золото | 100       | 300       | TRUE
-BLK-RING-25-SIL   | RING | 25      | SIL   | бублик 25мм срібло | 100       | 300       | TRUE
-```
-
-**ProductMappings:**
-```
-product_name      | size_property | metal_color | blank_sku       | qty_per_unit | active | priority
-Адресник бублик   | 25 мм         | золото      | BLK-RING-25-GLD | 1            | TRUE   | 50
-Адресник бублик   | 25 мм         | срібло      | BLK-RING-25-SIL | 1            | TRUE   | 50
-```
-
-## 🚀 Развертывание в продакшене
-
-### Вариант 1: VPS с systemd
-
-1. Создайте systemd сервисы:
-
-```bash
-# /etc/systemd/system/warehouse-webhook.service
-[Unit]
-Description=Warehouse Webhook Service
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/opt/warehouse_automation
-Environment=PATH=/opt/warehouse_automation/venv/bin
-ExecStart=/opt/warehouse_automation/venv/bin/uvicorn src.webhook.app:app --host 0.0.0.0 --port 8000
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-2. Включите и запустите сервисы:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable warehouse-webhook
-sudo systemctl start warehouse-webhook
-```
-
-### Вариант 2: Docker
-
-```bash
-# Сборка образа
-docker build -t warehouse-automation .
-
-# Запуск с docker-compose
-docker-compose up -d
-```
-
-### Настройка веб-сервера (nginx)
-
+**Содержимое файла:**
 ```nginx
 server {
     listen 80;
-    server_name yourdomain.com;
+    server_name blanks.yourdomain.com;
 
-    location /webhook/ {
-        proxy_pass http://127.0.0.1:8000;
+    location / {
+        proxy_pass http://localhost:8000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    location /health {
-        proxy_pass http://127.0.0.1:8000;
+    location /webhook/ {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-## 📊 Мониторинг и логи
-
-### Просмотр логов
-
+### 2.3. Активация конфигурации
 ```bash
-# Логи webhook сервера
-tail -f logs/webhook.log
-
-# Логи Telegram бота  
-tail -f logs/bot.log
-
-# Логи планировщика
-tail -f logs/scheduler.log
-
-# Системные логи
-sudo journalctl -u warehouse-webhook -f
+# Активация сайта
+sudo ln -s /etc/nginx/sites-available/warehouse /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+sudo systemctl enable nginx
 ```
 
-### Метрики и здоровье системы
-
+### 2.4. SSL сертификат (Let's Encrypt)
 ```bash
-# Проверка статуса компонентов
-curl http://localhost:8000/health
+# Установка Certbot
+sudo apt install -y certbot python3-certbot-nginx
 
-# Проверка готовности
-curl http://localhost:8000/ready
+# Получение SSL сертификата
+sudo certbot --nginx -d blanks.yourdomain.com
 
-# Статус systemd сервисов
-sudo systemctl status warehouse-*
+# Автообновление сертификатов
+sudo crontab -e
+# Добавьте: 0 12 * * * /usr/bin/certbot renew --quiet
 ```
-
-## 🐛 Решение проблем
-
-### Частые проблемы
-
-**1. Ошибка импорта модулей**
-```bash
-# Убедитесь что PYTHONPATH настроен
-export PYTHONPATH="${PYTHONPATH}:/path/to/warehouse_automation/src"
-```
-
-**2. Ошибка доступа к Google Sheets**
-```bash
-# Проверьте права service account
-# Убедитесь что таблица расшарена для service account email
-```
-
-**3. Telegram бот не отвечает**
-```bash
-# Проверьте токен бота
-curl https://api.telegram.org/bot<TOKEN>/getMe
-
-# Проверьте webhook URL
-curl https://api.telegram.org/bot<TOKEN>/getWebhookInfo
-```
-
-**4. KeyCRM webhook не работает**
-```bash  
-# Проверьте HMAC подпись
-# Убедитесь что URL доступен снаружи
-# Проверьте логи webhook сервера
-```
-
-### Отладка
-
-```bash
-# Включение подробного логирования
-export LOG_LEVEL=DEBUG
-
-# Запуск в режиме отладки
-python3 -m debugpy --listen 5678 --wait-for-client -m src.webhook.app
-```
-
-## 🔒 Безопасность
-
-### Рекомендации
-
-1. **Используйте HTTPS** для всех webhook endpoints
-2. **Ограничьте доступ** к серверу по IP
-3. **Регулярно обновляйте** токены и секреты  
-4. **Мониторьте логи** на подозрительную активность
-5. **Делайте бэкапы** конфигурации и данных
-
-### Файрвол
-
-```bash
-# Открыть только необходимые порты
-sudo ufw allow 22/tcp    # SSH
-sudo ufw allow 80/tcp    # HTTP  
-sudo ufw allow 443/tcp   # HTTPS
-sudo ufw enable
-```
-
-## 📈 Масштабирование
-
-### Горизонтальное масштабирование
-
-- Запустите несколько экземпляров webhook сервера за load balancer
-- Используйте Redis для координации между процессами
-- Реплицируйте базу данных для чтения
-
-### Производительность
-
-- Настройте connection pooling для внешних API
-- Используйте кеширование для часто запрашиваемых данных
-- Оптимизируйте запросы к Google Sheets API
-
-## ✅ Чек-лист развертывания
-
-- [ ] Система протестирована с помощью `scripts/test_system.py`
-- [ ] Все переменные окружения настроены
-- [ ] Google Sheets API доступ настроен
-- [ ] Telegram бот создан и токен получен
-- [ ] KeyCRM API токен получен и webhook настроен
-- [ ] Структура Google Sheets создана
-- [ ] SSL сертификат установлен (для продакшена)
-- [ ] Мониторинг и логирование настроено
-- [ ] Бэкапы настроены
-- [ ] Firewall настроен
-
-## 🆘 Поддержка
-
-При возникновении проблем:
-
-1. Проверьте логи системы
-2. Запустите диагностический скрипт `python3 scripts/test_system.py`
-3. Изучите документацию в `docs/`
-4. Создайте issue в GitHub репозитории
 
 ---
 
-🎉 **Поздравляем! Система автоматизации склада готова к работе!**
+## 3. Установка Docker и зависимостей
+
+### 3.1. Установка Docker
+```bash
+# Удаление старых версий
+sudo apt remove docker docker-engine docker.io containerd runc
+
+# Добавление репозитория Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Установка Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+
+# Добавление пользователя в группу docker
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Проверка установки
+docker --version
+```
+
+### 3.2. Установка Docker Compose
+```bash
+# Скачивание Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.21.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+
+# Права на выполнение
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Проверка
+docker-compose --version
+```
+
+### 3.3. Автозапуск Docker
+```bash
+sudo systemctl enable docker
+sudo systemctl start docker
+```
+
+---
+
+## 4. Настройка GitHub Actions (CI/CD)
+
+### 4.1. Создание SSH ключей
+
+**На сервере:**
+```bash
+# Генерация SSH ключа
+ssh-keygen -t rsa -b 4096 -C "deploy@warehouse" -f ~/.ssh/warehouse_deploy
+
+# Добавление в authorized_keys
+cat ~/.ssh/warehouse_deploy.pub >> ~/.ssh/authorized_keys
+
+# Показать приватный ключ (скопируйте)
+cat ~/.ssh/warehouse_deploy
+```
+
+### 4.2. GitHub Secrets
+
+**В GitHub репозитории → Settings → Secrets:**
+```
+VPS_HOST = YOUR_SERVER_IP
+VPS_USER = ubuntu (или ваш пользователь)
+VPS_PRIVATE_KEY = (содержимое ~/.ssh/warehouse_deploy)
+PROJECT_PATH = /home/ubuntu/Warehouse_Automation
+```
+
+### 4.3. Клонирование репозитория
+```bash
+# Клонирование
+cd ~
+git clone https://github.com/YOUR_USERNAME/Warehouse_Automation.git
+cd Warehouse_Automation
+
+# Создание папок
+mkdir -p logs data backups
+```
+
+---
+
+## 5. Конфигурация переменных окружения
+
+### 5.1. Создание .env
+```bash
+nano .env
+```
+
+**Содержимое .env:**
+```env
+# KeyCRM интеграция
+KEYCRM_API_TOKEN=your_token
+KEYCRM_WEBHOOK_SECRET=your_secret
+
+# Google Sheets
+GSHEETS_ID=your_sheets_id
+GOOGLE_CREDENTIALS_JSON={"type":"service_account",...}
+
+# Telegram
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+TELEGRAM_ALLOWED_USERS=[7373293370]
+TELEGRAM_ADMIN_USERS=[7373293370]
+
+# Webhook endpoint
+WEBHOOK_ENDPOINT=https://blanks.yourdomain.com/webhook/keycrm
+
+# Параметры
+TIMEZONE=Europe/Kyiv
+LOG_LEVEL=INFO
+DEBUG=false
+```
+
+### 5.2. Права доступа
+```bash
+chmod 600 .env
+```
+
+---
+
+## 6. Первоначальный деплой
+
+### 6.1. Ручной деплой
+```bash
+cd ~/Warehouse_Automation
+
+# Деплой одной командой
+./deploy.sh deploy
+
+# Или пошагово:
+docker-compose build
+docker-compose up -d
+```
+
+### 6.2. Проверка
+```bash
+# Статус контейнеров
+docker-compose ps
+
+# Логи
+docker-compose logs warehouse-bot
+
+# Управление
+./deploy.sh status
+./deploy.sh logs
+```
+
+---
+
+## 7. Мониторинг и управление
+
+### 7.1. Команды управления
+```bash
+./deploy.sh deploy    # Полный деплой
+./deploy.sh start     # Запуск
+./deploy.sh stop      # Остановка
+./deploy.sh restart   # Перезапуск
+./deploy.sh status    # Статус
+./deploy.sh logs      # Логи
+./deploy.sh backup    # Бэкап
+./deploy.sh cleanup   # Очистка
+```
+
+### 7.2. Автоматическое резервное копирование
+```bash
+crontab -e
+# Добавить: 0 3 * * * cd /home/ubuntu/Warehouse_Automation && ./deploy.sh backup
+```
+
+---
+
+## 🎉 Готово!
+
+После выполнения всех шагов:
+
+✅ Полностью контейнеризованная система  
+✅ Автодеплой при push в GitHub  
+✅ SSL сертификат и поддомен  
+✅ Мониторинг и логирование  
+✅ Резервное копирование  
+
+**Telegram бот будет доступен сразу после деплоя!** 🤖
+
+### Быстрые команды:
+```bash
+# Проверка системы
+./deploy.sh status
+
+# Обновление
+git pull && ./deploy.sh deploy
+
+# Логи в реальном времени  
+./deploy.sh logs
+```

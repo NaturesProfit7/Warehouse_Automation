@@ -8,12 +8,14 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from ..core.exceptions import StockCalculationError, IntegrationError, MappingError
-from ..core.models import MovementSourceType
-from ..services.stock_service import get_stock_service
-from ..services.report_service import get_report_service
-from ..utils.logger import get_logger
-from .keyboards import (
+from ...core.exceptions import StockCalculationError, IntegrationError, MappingError
+from ...core.models import MovementSourceType
+from ...services.stock_service import get_stock_service
+from ...services.report_service import get_report_service
+from ...utils.logger import get_logger
+from ..keyboards import (
+    get_analytics_menu_keyboard,
+    get_analytics_period_keyboard,
     get_blank_type_keyboard,
     get_bone_size_keyboard,
     get_cancel_keyboard,
@@ -26,12 +28,16 @@ from .keyboards import (
     get_round_size_keyboard,
     get_shaped_form_keyboard,
 )
-from .states import ReceiptStates
+from ..states import ReceiptStates, CorrectionStates
 
 logger = get_logger(__name__)
 
 # Создаем роутер для обработчиков
 router = Router()
+
+# Подключаем роутер мониторинга
+from .monitoring import router as monitoring_router
+router.include_router(monitoring_router)
 
 
 # === ОСНОВНЫЕ КОМАНДЫ ===
@@ -75,7 +81,7 @@ async def cmd_help(message: Message) -> None:
         "• /cancel — скасувати поточну операцію\n"
         "• /help — ця довідка\n\n"
         "⚙️ <b>Адміністратори:</b>\n"
-        "• /correction <SKU> <КІЛЬКІСТЬ> — швидка корекція\n\n"
+        "• /correction [SKU] [КІЛЬКІСТЬ] — швидка корекція\n\n"
         "❓ <b>Потрібна допомога?</b>\n"
         "Зверніться до адміністратора"
     )
@@ -220,20 +226,43 @@ async def process_blank_color(callback: CallbackQuery, state: FSMContext) -> Non
 
     color = callback.data[6:]  # Убираем "color_"
     await state.update_data(color=color)
-    await state.set_state(ReceiptStates.waiting_for_quantity)
 
     # Формируем SKU для отображения
     data = await state.get_data()
     sku = _build_sku_from_data(data)
+    await state.update_data(sku=sku)
 
     color_names = {"GLD": "🟡 Золото", "SIL": "⚪ Срібло"}
     color_name = color_names.get(color, color)
 
-    text = (
-        f"{color_name}\n\n"
-        f"🏷️ <b>SKU:</b> <code>{sku}</code>\n\n"
-        f"Введіть кількість заготовок:"
-    )
+    # Проверяем, это коррекция или приход
+    if "correction_type" in data:
+        # Это коррекция - переходим в состояние коррекции
+        await state.set_state(CorrectionStates.waiting_for_quantity)
+        correction_type = data["correction_type"]
+        
+        if correction_type == "add":
+            instruction = "Введіть кількість для <b>додавання</b>:"
+        elif correction_type == "subtract":
+            instruction = "Введіть кількість для <b>вирахування</b>:"
+        elif correction_type == "set":
+            instruction = "Введіть <b>точний залишок</b>:"
+        else:
+            instruction = "Введіть кількість:"
+            
+        text = (
+            f"{color_name}\n\n"
+            f"🏷️ <b>SKU:</b> <code>{sku}</code>\n\n"
+            f"{instruction}"
+        )
+    else:
+        # Это обычный приход
+        await state.set_state(ReceiptStates.waiting_for_quantity)
+        text = (
+            f"{color_name}\n\n"
+            f"🏷️ <b>SKU:</b> <code>{sku}</code>\n\n"
+            f"Введіть кількість заготовок:"
+        )
 
     await callback.message.edit_text(text, reply_markup=get_cancel_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -375,14 +404,32 @@ async def process_report_type(callback: CallbackQuery) -> None:
 
 # === КОРРЕКТИРОВКИ (ТОЛЬКО ДЛЯ АДМИНИСТРАТОРОВ) ===
 
+@router.message(Command("correction"))
+async def cmd_correction(message: Message, is_admin: bool, state: FSMContext) -> None:
+    """Команда корректировки остатков."""
+    
+    if not is_admin:
+        await message.answer("❌ Недостатньо прав доступу")
+        return
+    
+    await state.set_state(CorrectionStates.waiting_for_sku)
+    text = "⚙️ <b>Корекція залишків</b>\n\nОберіть тип операції:"
+    
+    await message.answer(
+        text,
+        reply_markup=get_correction_type_keyboard(),
+        parse_mode="HTML"
+    )
+
 @router.callback_query(F.data == "correction")
-async def start_correction(callback: CallbackQuery, is_admin: bool) -> None:
+async def start_correction(callback: CallbackQuery, is_admin: bool, state: FSMContext) -> None:
     """Начало процесса корректировки."""
 
     if not is_admin:
         await callback.answer("❌ Недостатньо прав доступу", show_alert=True)
         return
 
+    await state.set_state(CorrectionStates.waiting_for_sku)
     text = "⚙️ <b>Корекція залишків</b>\n\nОберіть тип операції:"
 
     await callback.message.edit_text(
@@ -391,6 +438,389 @@ async def start_correction(callback: CallbackQuery, is_admin: bool) -> None:
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@router.callback_query(CorrectionStates.waiting_for_sku, F.data.startswith("correction_"))
+async def process_correction_type(callback: CallbackQuery, state: FSMContext) -> None:
+    """Обработка выбора типа коррекции."""
+    
+    correction_type = callback.data.replace("correction_", "")
+    await state.update_data(correction_type=correction_type)
+    
+    # Переходим к выбору типа заготовки
+    await state.set_state(ReceiptStates.waiting_for_type)
+    
+    if correction_type == "add":
+        text = "➕ <b>Додавання до залишків</b>\n\nОберіть тип заготовки:"
+    elif correction_type == "subtract":
+        text = "➖ <b>Вирахування із залишків</b>\n\nОберіть тип заготовки:"
+    elif correction_type == "set":
+        text = "🔄 <b>Встановлення точного залишку</b>\n\nОберіть тип заготовки:"
+    else:
+        await callback.answer("❌ Невідомий тип корекції")
+        return
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_blank_type_keyboard(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# Используем существующие обработчики выбора типа, размера и цвета из прихода
+# Но переопределим обработчик для количества в контексте коррекции
+
+@router.message(CorrectionStates.waiting_for_quantity)
+async def process_correction_quantity_input(message: Message, state: FSMContext) -> None:
+    """Обработка ввода количества для коррекции."""
+    
+    try:
+        data = await state.get_data()
+        correction_type = data["correction_type"]
+        sku = data["sku"]
+        
+        # Парсим количество
+        qty_str = message.text.strip()
+        
+        if correction_type == "set":
+            # Для типа "set" - абсолютное значение
+            if not qty_str.isdigit():
+                await message.answer("❌ Для встановлення точного залишку введіть позитивне число")
+                return
+            target_qty = int(qty_str)
+            if target_qty < 0:
+                await message.answer("❌ Кількість не може бути від'ємною")
+                return
+                
+            await state.update_data(target_qty=target_qty, adjustment=None)
+            display_change = f"встановити {target_qty}"
+        else:
+            # Для add/subtract - относительное изменение
+            try:
+                adjustment = int(qty_str)
+                if correction_type == "add":
+                    if adjustment <= 0:
+                        await message.answer("❌ Для додавання введіть позитивне число")
+                        return
+                    display_change = f"+{adjustment}"
+                elif correction_type == "subtract":
+                    if adjustment >= 0:
+                        adjustment = -adjustment  # Автоматически делаем отрицательным
+                    display_change = f"{adjustment}"
+                else:
+                    await message.answer("❌ Невідомий тип корекції")
+                    return
+            except ValueError:
+                await message.answer("❌ Введіть правильне число")
+                return
+                
+            await state.update_data(adjustment=adjustment, target_qty=None)
+        
+        await state.update_data(quantity_display=display_change)
+        await state.set_state(CorrectionStates.waiting_for_reason)
+        
+        await message.answer(
+            f"⚙️ <b>Підтвердження корекції</b>\n\n"
+            f"SKU: <code>{sku}</code>\n"
+            f"Зміна: <code>{display_change}</code>\n\n"
+            f"Введіть причину корекції:",
+            reply_markup=get_cancel_keyboard(),
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error("Error processing correction quantity", error=str(e))
+        await message.answer("❌ Помилка обробки. Спробуйте ще раз.")
+
+
+@router.message(CorrectionStates.waiting_for_reason)
+async def process_correction_reason(message: Message, state: FSMContext) -> None:
+    """Обработка ввода причины коррекции."""
+    
+    reason = message.text.strip()
+    if len(reason) < 5:
+        await message.answer("❌ Причина має містити не менше 5 символів")
+        return
+        
+    await state.update_data(reason=reason)
+    
+    # Получаем все данные
+    data = await state.get_data()
+    sku = data["sku"]
+    quantity_display = data["quantity_display"]
+    correction_type = data["correction_type"]
+    
+    # Выполняем коррекцию
+    try:
+        stock_service = get_stock_service()
+        
+        if correction_type == "set":
+            # Для set - вычисляем adjustment
+            current_stock = stock_service.get_current_stock(sku)
+            target_qty = data["target_qty"]
+            adjustment = target_qty - current_stock.on_hand
+        else:
+            adjustment = data["adjustment"]
+            
+        if adjustment == 0:
+            await message.answer("❌ Корекція не потрібна - залишок не змінився")
+            await state.clear()
+            return
+            
+        # Выполняем коррекцию
+        movement = await stock_service.add_correction_movement(
+            blank_sku=sku,
+            quantity_adjustment=adjustment,
+            user=f"{message.from_user.full_name} ({message.from_user.id})",
+            reason=reason
+        )
+        
+        await message.answer(
+            f"✅ <b>Корекція виконана!</b>\n\n"
+            f"SKU: <code>{sku}</code>\n"
+            f"Зміна: <code>{quantity_display}</code>\n"
+            f"Новий залишок: <b>{movement.balance_after}</b>\n"
+            f"ID руху: <code>{movement.id}</code>\n"
+            f"Причина: {reason}",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode="HTML"
+        )
+        
+        logger.info(
+            "Correction completed successfully",
+            sku=sku,
+            adjustment=adjustment,
+            new_balance=movement.balance_after,
+            user_id=message.from_user.id,
+            reason=reason
+        )
+        
+    except Exception as e:
+        logger.error("Failed to execute correction", sku=sku, error=str(e))
+        await message.answer(
+            f"❌ Помилка виконання корекції: {str(e)}",
+            reply_markup=get_main_menu_keyboard()
+        )
+        
+    await state.clear()
+
+
+# === АНАЛИТИКА ===
+
+@router.callback_query(F.data == "analytics")
+async def show_analytics_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Показ меню аналитики."""
+    
+    await state.clear()  # Очищаем состояние
+    
+    text = "📈 <b>Аналитика заготовок</b>\n\nВыберите тип анализа:"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_analytics_menu_keyboard(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.in_(["top_sales", "turnover_analysis", "purchase_recommendations"]))
+async def select_analytics_period(callback: CallbackQuery, state: FSMContext) -> None:
+    """Выбор периода для аналитики."""
+    
+    analytics_type = callback.data
+    await state.update_data(analytics_type=analytics_type)
+    
+    type_names = {
+        "top_sales": "📈 Топ продаж",
+        "turnover_analysis": "⚡ Оборачиваемость",
+        "purchase_recommendations": "🎯 Рекомендации закупок"
+    }
+    
+    text = f"{type_names[analytics_type]}\n\nВыберите период для анализа:"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_analytics_period_keyboard(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("period_"))
+async def process_analytics_period(callback: CallbackQuery, state: FSMContext) -> None:
+    """Обработка выбора периода и генерация отчета."""
+    
+    period_str = callback.data.replace("period_", "")
+    days = int(period_str)
+    
+    data = await state.get_data()
+    analytics_type = data.get("analytics_type")
+    
+    if not analytics_type:
+        await callback.answer("❌ Ошибка: тип аналитики не выбран")
+        return
+    
+    # Показываем индикатор загрузки
+    await callback.message.edit_text(
+        "⏳ <b>Генерируем отчет...</b>\n\nЭто может занять несколько секунд",
+        parse_mode="HTML"
+    )
+    
+    try:
+        report_service = get_report_service()
+        
+        if analytics_type == "top_sales":
+            report_data = await report_service.generate_top_sales_report(days)
+            text = format_top_sales_report(report_data)
+        elif analytics_type == "turnover_analysis":
+            report_data = await report_service.generate_turnover_analysis(days)
+            text = format_turnover_report(report_data)
+        elif analytics_type == "purchase_recommendations":
+            report_data = await report_service.generate_purchase_recommendations(days)
+            text = format_purchase_recommendations_report(report_data)
+        else:
+            text = "❌ Неизвестный тип аналитики"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_analytics_menu_keyboard(),
+            parse_mode="HTML"
+        )
+        
+        logger.info(
+            "Analytics report generated",
+            type=analytics_type,
+            days=days,
+            user_id=callback.from_user.id
+        )
+        
+    except Exception as e:
+        logger.error("Failed to generate analytics report", error=str(e), type=analytics_type)
+        await callback.message.edit_text(
+            f"❌ <b>Ошибка генерации отчета</b>\n\n{str(e)}",
+            reply_markup=get_analytics_menu_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
+def format_top_sales_report(data: dict) -> str:
+    """Форматирование отчета топ продаж."""
+    
+    period = data["period_days"]
+    top_skus = data["top_skus"]
+    total_outbound = data["total_outbound"]
+    total_orders = data["total_orders"]
+    
+    text = f"📈 <b>ТОП ПРОДАЖ за {period} дней</b>\n\n"
+    
+    if not top_skus:
+        text += "📭 Нет данных о расходах за выбранный период"
+        return text
+    
+    text += f"📊 Общая статистика:\n"
+    text += f"• Всего расходов: {total_outbound} шт\n"
+    text += f"• Количество заказов: {total_orders}\n\n"
+    
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    for i, (sku, stats) in enumerate(top_skus):
+        medal = medals[i] if i < len(medals) else f"{i+1}."
+        total_qty = stats["total_quantity"]
+        order_count = stats["order_count"]
+        
+        text += f"{medal} <code>{sku}</code>\n"
+        text += f"   Расход: <b>{total_qty} шт</b> | Заказов: {order_count}\n\n"
+    
+    return text
+
+
+def format_turnover_report(data: dict) -> str:
+    """Форматирование отчета оборачиваемости."""
+    
+    period = data["period_days"]
+    fast_movers = data["fast_movers"]
+    medium_movers = data["medium_movers"]
+    slow_movers = data["slow_movers"]
+    
+    text = f"⚡ <b>ОБОРАЧИВАЕМОСТЬ за {period} дней</b>\n\n"
+    
+    def format_items(items, limit=5):
+        result = ""
+        for i, item in enumerate(items[:limit]):
+            sku = item["sku"]
+            weekly = item["weekly_consumption"]
+            stock = item["current_stock"]
+            days_left = item["days_to_stockout"]
+            
+            days_text = f"({days_left}д до конца)" if days_left else "(не закончится)"
+            result += f"• <code>{sku}</code>: {weekly:.1f} шт/нед | {stock} шт {days_text}\n"
+        return result
+    
+    if fast_movers:
+        text += f"🔥 <b>БЫСТРООБОРОТНЫЕ</b> (≥10 шт/неделю):\n"
+        text += format_items(fast_movers)
+        text += "\n"
+    
+    if medium_movers:
+        text += f"🟡 <b>СРЕДНИЕ</b> (5-10 шт/неделю):\n"
+        text += format_items(medium_movers)
+        text += "\n"
+    
+    if slow_movers:
+        text += f"🐌 <b>МЕДЛЕННЫЕ</b> (&lt;5 шт/неделю):\n"
+        # Показываем только первые 3 медленных
+        text += format_items(slow_movers, limit=3)
+        if len(slow_movers) > 3:
+            text += f"... и еще {len(slow_movers) - 3} товаров\n"
+    
+    return text
+
+
+def format_purchase_recommendations_report(data: dict) -> str:
+    """Форматирование рекомендаций по закупкам."""
+    
+    period = data["period_days"]
+    critical = data["critical"]
+    high_priority = data["high_priority"]
+    medium_priority = data["medium_priority"]
+    total_cost = data["total_estimated_cost"]
+    
+    text = f"🎯 <b>РЕКОМЕНДАЦИИ ЗАКУПОК</b>\n"
+    text += f"(Анализ за {period} дней)\n\n"
+    
+    def format_recommendations(items, limit=5):
+        result = ""
+        for item in items[:limit]:
+            sku = item["sku"]
+            current = item["current_stock"]
+            recommended = item["recommended_qty"]
+            reason = item["reason"].replace("<", "&lt;").replace(">", "&gt;")  # Экранируем HTML
+            
+            result += f"• <code>{sku}</code>\n"
+            result += f"  Есть: {current} → Заказать: <b>{recommended} шт</b>\n"
+            result += f"  Причина: {reason}\n\n"
+        return result
+    
+    if critical:
+        text += f"🚨 <b>КРИТИЧНО</b> ({len(critical)}):\n"
+        text += format_recommendations(critical, 3)
+    
+    if high_priority:
+        text += f"🟠 <b>ВЫСОКИЙ ПРИОРИТЕТ</b> ({len(high_priority)}):\n"
+        text += format_recommendations(high_priority, 3)
+    
+    if medium_priority:
+        text += f"🟡 <b>СРЕДНИЙ ПРИОРИТЕТ</b> ({len(medium_priority)}):\n"
+        text += format_recommendations(medium_priority, 2)
+    
+    if not (critical or high_priority or medium_priority):
+        text += "✅ <b>Все заготовки в достатке!</b>\n"
+        text += "Дополнительные закупки не требуются.\n\n"
+    
+    return text
 
 
 # === НАВИГАЦИЯ ===

@@ -1,11 +1,11 @@
-from typing import List
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Конфигурация приложения согласно ТЗ."""
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -15,9 +15,8 @@ class Settings(BaseSettings):
 
     # KeyCRM интеграция
     KEYCRM_API_TOKEN: str = Field(..., description="API токен KeyCRM")
-    KEYCRM_API_URL: str = Field(
-        default="https://api.keycrm.app", description="Base URL KeyCRM API"
-    )
+    # KeyCRM не использует отдельный API URL - запросы идут к стандартным endpoints
+    # KEYCRM_API_URL убран согласно документации KeyCRM
     KEYCRM_WEBHOOK_SECRET: str = Field(
         ..., description="Секретный ключ для проверки HMAC подписи вебхуков"
     )
@@ -31,10 +30,10 @@ class Settings(BaseSettings):
     # Telegram бот
     TELEGRAM_BOT_TOKEN: str = Field(..., description="Токен Telegram бота")
     TELEGRAM_CHAT_ID: str = Field(..., description="ID чата для уведомлений")
-    TELEGRAM_ALLOWED_USERS: List[int] = Field(
+    TELEGRAM_ALLOWED_USERS: list[int] = Field(
         default=[7373293370], description="Список user_id с доступом к боту"
     )
-    TELEGRAM_ADMIN_USERS: List[int] = Field(
+    TELEGRAM_ADMIN_USERS: list[int] = Field(
         default=[7373293370], description="Список admin user_id"
     )
 
@@ -96,7 +95,7 @@ def get_settings() -> Settings:
 # Для обратной совместимости - создаем только при доступе к атрибуту
 class LazySettings:
     _instance = None
-    
+
     def __getattr__(self, name):
         if self._instance is None:
             self._instance = Settings()

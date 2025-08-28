@@ -234,8 +234,8 @@ class StockService:
             )
 
             # Сохранение
-            await self._save_movements([movement])
-            await self._update_current_stock([movement])
+            self._save_movements([movement])
+            self._update_current_stock([movement])
 
             logger.info(
                 "Receipt movement added",
@@ -322,8 +322,8 @@ class StockService:
             )
 
             # Сохранение
-            await self._save_movements([movement])
-            await self._update_current_stock([movement])
+            self._save_movements([movement])
+            self._update_current_stock([movement])
 
             logger.info(
                 "Correction movement added",
@@ -356,7 +356,7 @@ class StockService:
             if current_stock:
                 return current_stock
 
-            # Если записи нет, создаем с нулевым остатком
+            # Если записи нет, создаем с нулевым остатком (НЕ сохраняем сразу)
             logger.info("Creating new stock record", blank_sku=blank_sku)
 
             new_stock = CurrentStock(
@@ -367,7 +367,7 @@ class StockService:
                 last_updated=datetime.now()
             )
 
-            self.sheets_client.update_current_stock([new_stock])
+            # НЕ сохраняем сразу - сохранение произойдет в _update_current_stock
             return new_stock
 
         except Exception as e:
@@ -377,7 +377,7 @@ class StockService:
     async def get_all_current_stock(self) -> list[CurrentStock]:
         """Получение всех текущих остатков."""
         try:
-            return await self.sheets_client.get_all_current_stock()
+            return self.sheets_client.get_all_current_stock()
         except Exception as e:
             logger.error("Failed to get all current stock", error=str(e))
             raise StockCalculationError(f"Failed to get all stock: {str(e)}")
@@ -610,6 +610,102 @@ class StockService:
     def _save_unmapped_items(self, unmapped_items: list[UnmappedItem]) -> None:
         """Сохранение unmapped позиций."""
         self.sheets_client.add_unmapped_items(unmapped_items)
+    
+    async def update_usage_statistics(self) -> int:
+        """
+        Обновление статистики использования для всех SKU.
+        
+        Returns:
+            int: Количество обновленных SKU
+        """
+        try:
+            logger.info("Updating usage statistics for all SKUs")
+            
+            # Получаем все движения
+            all_movements = self.sheets_client.get_movements()
+            
+            # Получаем текущие остатки
+            current_stocks = await self.get_all_current_stock()
+            
+            # Создаем словарь для накопления статистики
+            sku_stats = {}
+            
+            from datetime import datetime, timedelta
+            cutoff_date = datetime.now() - timedelta(days=30)  # За последние 30 дней
+            
+            # Анализируем движения за последние 30 дней
+            for movement in all_movements:
+                if movement.timestamp < cutoff_date:
+                    continue
+                    
+                sku = movement.blank_sku
+                if sku not in sku_stats:
+                    sku_stats[sku] = {
+                        'total_outbound': 0,
+                        'days_with_usage': set(),
+                        'last_order_date': None,
+                        'last_receipt_date': None
+                    }
+                
+                if movement.type == MovementType.ORDER and movement.qty < 0:
+                    sku_stats[sku]['total_outbound'] += abs(movement.qty)
+                    sku_stats[sku]['days_with_usage'].add(movement.timestamp.date())
+                    sku_stats[sku]['last_order_date'] = max(
+                        sku_stats[sku]['last_order_date'] or movement.timestamp.date(),
+                        movement.timestamp.date()
+                    )
+                elif movement.type == MovementType.RECEIPT and movement.qty > 0:
+                    sku_stats[sku]['last_receipt_date'] = max(
+                        sku_stats[sku]['last_receipt_date'] or movement.timestamp.date(),
+                        movement.timestamp.date()
+                    )
+            
+            # Обновляем статистику текущих остатков
+            updated_stocks = []
+            
+            for stock in current_stocks:
+                sku = stock.blank_sku
+                stats = sku_stats.get(sku, {})
+                
+                # Рассчитываем средний дневной расход
+                total_outbound = stats.get('total_outbound', 0)
+                days_with_usage = len(stats.get('days_with_usage', set()))
+                
+                if days_with_usage > 0:
+                    # Средний расход в дни с активностью
+                    avg_daily_usage = total_outbound / 30  # Равномерно за 30 дней
+                else:
+                    avg_daily_usage = 0.0
+                
+                # Рассчитываем дни до исчерпания
+                days_of_stock = None
+                if avg_daily_usage > 0:
+                    days_of_stock = int(stock.on_hand / avg_daily_usage)
+                
+                # Обновляем объект
+                stock.avg_daily_usage = round(avg_daily_usage, 2)
+                stock.days_of_stock = days_of_stock
+                stock.last_order_date = stats.get('last_order_date')
+                stock.last_receipt_date = stats.get('last_receipt_date')
+                stock.last_updated = datetime.now()
+                
+                updated_stocks.append(stock)
+            
+            # Сохраняем обновленные данные
+            if updated_stocks:
+                self.sheets_client.update_current_stock(updated_stocks)
+            
+            logger.info(
+                "Usage statistics updated successfully", 
+                updated_skus=len(updated_stocks),
+                analyzed_movements=len([m for m in all_movements if m.timestamp >= cutoff_date])
+            )
+            
+            return len(updated_stocks)
+            
+        except Exception as e:
+            logger.error("Failed to update usage statistics", error=str(e))
+            raise StockCalculationError(f"Usage statistics update failed: {str(e)}")
 
 
 # Глобальный экземпляр сервиса

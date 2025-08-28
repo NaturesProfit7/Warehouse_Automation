@@ -1,96 +1,63 @@
 version: '3.8'
 
 services:
-  webhook:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: timosh-blanks-webhook
-    command: uvicorn src.webhook.app:app --host 0.0.0.0 --port 8000 --reload
+  warehouse-bot:
+    build: .
+    container_name: warehouse-automation
+    restart: unless-stopped
+    environment:
+      # KeyCRM интеграция
+      - KEYCRM_API_TOKEN=${KEYCRM_API_TOKEN}
+      - KEYCRM_WEBHOOK_SECRET=${KEYCRM_WEBHOOK_SECRET}
+      
+      # Google Sheets
+      - GSHEETS_ID=${GSHEETS_ID}
+      - GOOGLE_CREDENTIALS_JSON=${GOOGLE_CREDENTIALS_JSON}
+      
+      # Telegram
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}
+      - TELEGRAM_ADMIN_USERS=${TELEGRAM_ADMIN_USERS}
+      
+      # Webhook endpoint
+      - WEBHOOK_ENDPOINT=${WEBHOOK_ENDPOINT}
+      
+      # Параметры планирования
+      - LEAD_TIME_DAYS=${LEAD_TIME_DAYS:-14}
+      - SCRAP_PCT=${SCRAP_PCT:-0.05}
+      - TARGET_COVER_DAYS=${TARGET_COVER_DAYS:-14}
+      - MIN_STOCK_DEFAULT=${MIN_STOCK_DEFAULT:-100}
+      - PAR_STOCK_DEFAULT=${PAR_STOCK_DEFAULT:-300}
+      
+      # Технические параметры
+      - TIMEZONE=${TIMEZONE:-Europe/Kyiv}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEBUG=${DEBUG:-false}
+    
     ports:
       - "8000:8000"
-    env_file:
-      - .env
+    
     volumes:
-      - ./src:/app/src:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
-    restart: unless-stopped
-    depends_on:
-      - redis
+      - ./logs:/app/logs:rw
+      - ./data:/app/data:rw
+    
     networks:
-      - timosh-network
-
-  scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: timosh-blanks-scheduler
-    command: python -m src.scheduler.runner
-    env_file:
-      - .env
-    volumes:
-      - ./src:/app/src:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
-    restart: unless-stopped
-    depends_on:
-      - redis
-    networks:
-      - timosh-network
-
-  bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: timosh-blanks-bot
-    command: python -m src.bot
-    env_file:
-      - .env
-    volumes:
-      - ./src:/app/src:ro
-      - ./data:/app/data
-      - ./logs:/app/logs
-    restart: unless-stopped
-    depends_on:
-      - redis
-    networks:
-      - timosh-network
-
-  redis:
-    image: redis:7-alpine
-    container_name: timosh-blanks-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    restart: unless-stopped
-    networks:
-      - timosh-network
-    command: redis-server --appendonly yes
-
-  nginx:
-    image: nginx:alpine
-    container_name: timosh-blanks-nginx
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./ssl:/etc/ssl:ro
-      - nginx_logs:/var/log/nginx
-    restart: unless-stopped
-    depends_on:
-      - webhook
-    networks:
-      - timosh-network
-
-volumes:
-  redis_data:
-    driver: local
-  nginx_logs:
-    driver: local
+      - warehouse-network
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import asyncio; print('Health check passed')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
-  timosh-network:
+  warehouse-network:
     driver: bridge

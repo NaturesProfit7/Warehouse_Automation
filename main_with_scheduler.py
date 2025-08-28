@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Главный модуль запуска системы с планировщиком."""
+
+import asyncio
+import logging
+import signal
+from typing import Optional
+
+from src.bot import create_bot
+from src.services.scheduler_service import get_scheduler_service
+from src.services.stock_service import get_stock_service
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class WarehouseApp:
+    """Основное приложение системы управления складом."""
+    
+    def __init__(self):
+        self.bot = None
+        self.dp = None
+        self.scheduler = None
+        self.running = False
+        
+    async def start(self):
+        """Запуск всех компонентов системы."""
+        try:
+            logger.info("🚀 Starting Warehouse Automation System...")
+            
+            # Создаем бота
+            logger.info("Initializing Telegram bot...")
+            self.bot, self.dp = await create_bot()
+            
+            # Устанавливаем команды
+            await self._set_bot_commands()
+            
+            # Инициализируем планировщик
+            logger.info("Initializing scheduler service...")
+            self.scheduler = get_scheduler_service()
+            await self.scheduler.start()
+            
+            # Инициализируем сервисы
+            logger.info("Initializing core services...")
+            stock_service = get_stock_service()
+            logger.info("Stock service initialized")
+            
+            # Уведомляем о запуске
+            await self._notify_startup()
+            
+            self.running = True
+            logger.info("✅ All services started successfully!")
+            
+            # Запускаем polling в фоне
+            polling_task = asyncio.create_task(
+                self.dp.start_polling(self.bot)
+            )
+            
+            logger.info("📱 Bot polling started")
+            
+            # Ждем завершения
+            await polling_task
+            
+        except Exception as e:
+            logger.error(f"Failed to start application: {e}")
+            await self.stop()
+            raise
+    
+    async def stop(self):
+        """Остановка всех компонентов системы."""
+        if not self.running:
+            return
+            
+        logger.info("🛑 Stopping Warehouse Automation System...")
+        
+        try:
+            # Останавливаем планировщик
+            if self.scheduler:
+                await self.scheduler.stop()
+                logger.info("Scheduler stopped")
+            
+            # Закрываем сессию бота
+            if self.bot:
+                await self.bot.session.close()
+                logger.info("Bot session closed")
+                
+            self.running = False
+            logger.info("✅ Application stopped gracefully")
+            
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+    
+    async def _set_bot_commands(self):
+        """Установка команд бота."""
+        from aiogram.types import BotCommand
+        
+        commands = [
+            BotCommand(command="start", description="Головне меню"),
+            BotCommand(command="receipt", description="Додати приход"),
+            BotCommand(command="report", description="Звіт по залишках"),
+            BotCommand(command="health", description="Статус системи"),
+            BotCommand(command="help", description="Довідка"),
+            BotCommand(command="cancel", description="Скасувати операцію")
+        ]
+        
+        await self.bot.set_my_commands(commands)
+        logger.info("Bot commands configured")
+    
+    async def _notify_startup(self):
+        """Уведомление администраторов о запуске."""
+        from src.config import settings
+        from datetime import datetime
+        
+        try:
+            admin_ids = settings.TELEGRAM_ADMIN_USERS
+            if not admin_ids:
+                logger.warning("No admin user IDs configured for startup notification")
+                return
+            
+            startup_message = f"""🚀 <b>Система запущена</b>
+
+✅ Telegram бот активен
+✅ Планировщик уведомлений запущен  
+✅ Мониторинг системы работает
+✅ Сервисы остатков готовы
+
+🕒 Время запуска: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
+
+💡 Используйте /health для проверки состояния системы"""
+            
+            for admin_id in admin_ids:
+                try:
+                    await self.bot.send_message(admin_id, startup_message, parse_mode="HTML")
+                    logger.debug(f"Startup notification sent to admin {admin_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to notify admin {admin_id}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to send startup notifications: {e}")
+
+
+async def main():
+    """Основная функция запуска."""
+    
+    # Настройка логирования
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Создаем приложение
+    app = WarehouseApp()
+    
+    # Обработка сигналов для корректного завершения
+    def signal_handler(sig, frame):
+        logger.info(f"Received signal {sig}, shutting down...")
+        asyncio.create_task(app.stop())
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        # Запускаем приложение
+        await app.start()
+        
+    except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
+    except Exception as e:
+        logger.error(f"Application crashed: {e}")
+        raise
+    finally:
+        await app.stop()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application stopped by user")
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        exit(1)

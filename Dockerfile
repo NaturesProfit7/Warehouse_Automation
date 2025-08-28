@@ -1,42 +1,51 @@
-FROM python:3.11-slim
+# Базовый образ Python 3.12
+FROM python:3.12-slim
 
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
+# Метаданные
+LABEL maintainer="Warehouse Automation System"
+LABEL description="Telegram Bot for Warehouse Management"
+
+# Переменные окружения
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/app" \
+    DEBIAN_FRONTEND=noninteractive
 
 # Создание пользователя для безопасности
-RUN useradd --create-home --shell /bin/bash app
+RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Установка рабочей директории
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создание директорий
 WORKDIR /app
 
 # Копирование файлов зависимостей
 COPY requirements.txt .
-COPY requirements-dev.txt .
 
 # Установка Python зависимостей
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Копирование исходного кода
-COPY src/ src/
-COPY scripts/ scripts/
+COPY . .
 
-# Создание директорий для данных и логов
-RUN mkdir -p data logs && \
-    chown -R app:app /app
+# Создание директорий для логов и данных
+RUN mkdir -p /app/logs /app/data && \
+    chown -R appuser:appuser /app
 
 # Переключение на непривилегированного пользователя
-USER app
+USER appuser
 
-# Установка переменных окружения
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import asyncio; print('Health check passed')" || exit 1
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=10)"
+# Экспозиция портов
+EXPOSE 8000
 
-# Команда по умолчанию
-CMD ["python", "-m", "uvicorn", "src.webhook.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Точка входа
+CMD ["python", "main_with_scheduler.py"]

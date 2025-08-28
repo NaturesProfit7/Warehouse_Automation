@@ -1,11 +1,12 @@
 """Сервис генерации отчетов по остаткам и движениям."""
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from enum import Enum
 from typing import Any
 
 from ..core.calculations import get_stock_calculator
-from ..core.models import UrgencyLevel
+from ..core.models import UrgencyLevel, MovementType
 from ..integrations.sheets import get_sheets_client
 from ..services.stock_service import get_stock_service
 from ..utils.logger import get_logger
@@ -413,7 +414,7 @@ class ReportService:
         if summary["sufficient_count"] > 0:
             text += f"✅ <b>Достатній запас:</b> {summary['sufficient_count']} SKU\n\n"
 
-        text += "📊 Детальний звіт: /report full"
+        text += "📊 Детальний звіт доступний в меню"
 
         return text[:max_length]
 
@@ -554,6 +555,293 @@ class ReportService:
             "HEART": "❤️", "FLOWER": "🌸", "CLOUD": "☁️"
         }
         return type_emojis.get(stock_type, "📦")
+
+    # === МЕТОДЫ АНАЛИТИКИ ТРЕНДОВ ===
+
+    async def generate_top_sales_report(self, days: int = 30) -> dict[str, Any]:
+        """
+        Генерация отчета по топ продажам за период.
+        
+        Args:
+            days: Количество дней для анализа
+            
+        Returns:
+            Dict[str, Any]: Отчет по топ продажам
+        """
+        try:
+            logger.info("Generating top sales report", days=days)
+            
+            # Получаем движения расхода за период
+            outbound_movements = self._get_outbound_movements(days)
+            
+            # Группируем по SKU и считаем метрики
+            sku_stats = {}
+            for movement in outbound_movements:
+                sku = movement.blank_sku
+                if sku not in sku_stats:
+                    sku_stats[sku] = {
+                        "total_quantity": 0,
+                        "order_count": 0,
+                        "movements": []
+                    }
+                
+                # Для расходов количество отрицательное, берем абсолютное значение
+                quantity = abs(movement.qty)
+                sku_stats[sku]["total_quantity"] += quantity
+                sku_stats[sku]["order_count"] += 1
+                sku_stats[sku]["movements"].append(movement)
+            
+            # Сортируем по объему продаж
+            top_skus = sorted(
+                sku_stats.items(),
+                key=lambda x: x[1]["total_quantity"],
+                reverse=True
+            )[:10]
+            
+            # Добавляем данные о средних заказах
+            for sku, stats in top_skus:
+                stats["avg_order_size"] = (
+                    stats["total_quantity"] / stats["order_count"]
+                    if stats["order_count"] > 0 else 0
+                )
+            
+            return {
+                "period_days": days,
+                "top_skus": top_skus,
+                "total_outbound": sum(stats["total_quantity"] for _, stats in sku_stats.items()),
+                "total_orders": sum(stats["order_count"] for _, stats in sku_stats.items())
+            }
+            
+        except Exception as e:
+            logger.error("Failed to generate top sales report", error=str(e))
+            raise
+
+    async def generate_turnover_analysis(self, days: int = 30) -> dict[str, Any]:
+        """
+        Генерация анализа оборачиваемости заготовок.
+        
+        Args:
+            days: Количество дней для анализа
+            
+        Returns:
+            Dict[str, Any]: Анализ оборачиваемости
+        """
+        try:
+            logger.info("Generating turnover analysis", days=days)
+            
+            # Получаем данные
+            outbound_movements = self._get_outbound_movements(days)
+            current_stocks = await self.stock_service.get_all_current_stock()
+            
+            # Создаем словарь остатков по SKU
+            stock_dict = {stock.blank_sku: stock for stock in current_stocks}
+            
+            # Группируем расходы по SKU
+            sku_consumption = {}
+            for movement in outbound_movements:
+                sku = movement.blank_sku
+                quantity = abs(movement.qty)
+                sku_consumption[sku] = sku_consumption.get(sku, 0) + quantity
+            
+            # Рассчитываем скорость оборота (шт/неделя)
+            weeks = days / 7
+            turnover_data = []
+            
+            for sku, stock in stock_dict.items():
+                consumption = sku_consumption.get(sku, 0)
+                weekly_consumption = consumption / weeks if weeks > 0 else 0
+                
+                # Дни до истощения при текущей скорости
+                days_to_stockout = None
+                if weekly_consumption > 0:
+                    days_to_stockout = int((stock.on_hand / weekly_consumption) * 7)
+                
+                turnover_data.append({
+                    "sku": sku,
+                    "current_stock": stock.on_hand,
+                    "total_consumption": consumption,
+                    "weekly_consumption": weekly_consumption,
+                    "days_to_stockout": days_to_stockout
+                })
+            
+            # Сортируем по скорости оборота
+            turnover_data.sort(key=lambda x: x["weekly_consumption"], reverse=True)
+            
+            # Категоризируем
+            fast_movers = [item for item in turnover_data if item["weekly_consumption"] >= 10]
+            medium_movers = [item for item in turnover_data if 5 <= item["weekly_consumption"] < 10]
+            slow_movers = [item for item in turnover_data if item["weekly_consumption"] < 5]
+            
+            return {
+                "period_days": days,
+                "fast_movers": fast_movers,
+                "medium_movers": medium_movers,
+                "slow_movers": slow_movers,
+                "total_skus_analyzed": len(turnover_data)
+            }
+            
+        except Exception as e:
+            logger.error("Failed to generate turnover analysis", error=str(e))
+            raise
+
+    async def generate_purchase_recommendations(self, days: int = 30) -> dict[str, Any]:
+        """
+        Генерация рекомендаций по закупкам на основе трендов.
+        
+        Args:
+            days: Количество дней для анализа трендов
+            
+        Returns:
+            Dict[str, Any]: Рекомендации по закупкам
+        """
+        try:
+            logger.info("Generating purchase recommendations", days=days)
+            
+            # Получаем анализ оборачиваемости
+            turnover = await self.generate_turnover_analysis(days)
+            current_stocks = await self.stock_service.get_all_current_stock()
+            master_blanks = self.sheets_client.get_master_blanks()
+            
+            # Создаем словари для быстрого доступа
+            stock_dict = {stock.blank_sku: stock for stock in current_stocks}
+            master_dict = {blank.blank_sku: blank for blank in master_blanks}
+            
+            recommendations = []
+            
+            # Анализируем каждый SKU
+            all_items = (turnover["fast_movers"] + 
+                        turnover["medium_movers"] + 
+                        turnover["slow_movers"])
+            
+            for item in all_items:
+                sku = item["sku"]
+                current_stock = item["current_stock"]
+                weekly_consumption = item["weekly_consumption"]
+                days_to_stockout = item["days_to_stockout"]
+                
+                master_blank = master_dict.get(sku)
+                if not master_blank:
+                    continue
+                
+                min_level = master_blank.min_stock or 50
+                max_level = master_blank.par_stock or 300
+                
+                # Определяем приоритет и рекомендацию
+                urgency = "low"
+                recommended_qty = 0
+                reason = ""
+                
+                if current_stock < min_level:
+                    # Критически мало
+                    urgency = "critical"
+                    recommended_qty = max_level - current_stock
+                    reason = f"Остаток {current_stock} < минимума {min_level}"
+                    
+                elif days_to_stockout and days_to_stockout < 14:
+                    # Закончится в ближайшие 2 недели
+                    urgency = "high"
+                    # Заказываем на 6 недель вперед
+                    recommended_qty = int(weekly_consumption * 6) - current_stock
+                    reason = f"Истощится через {days_to_stockout} дней"
+                    
+                elif weekly_consumption > 0:
+                    # Рассчитываем оптимальную партию
+                    weeks_of_stock = current_stock / weekly_consumption if weekly_consumption > 0 else 999
+                    
+                    if weeks_of_stock < 4:  # Меньше месяца
+                        urgency = "medium"
+                        recommended_qty = int(weekly_consumption * 8) - current_stock  # 2 месяца
+                        reason = f"Запаса на {weeks_of_stock:.1f} недель (рост спроса)"
+                
+                if recommended_qty > 0:
+                    # Корректируем партию с учетом минимальных заказов
+                    if recommended_qty < 50:
+                        recommended_qty = 50  # Минимальная партия
+                    
+                    # Увеличиваем для быстрооборотных товаров
+                    if weekly_consumption >= 15:  # Очень быстрые
+                        recommended_qty = int(recommended_qty * 1.3)
+                        reason += " (популярный товар)"
+                    elif weekly_consumption >= 10:  # Быстрые
+                        recommended_qty = int(recommended_qty * 1.2)
+                
+                if recommended_qty > 0:
+                    recommendations.append({
+                        "sku": sku,
+                        "current_stock": current_stock,
+                        "recommended_qty": recommended_qty,
+                        "urgency": urgency,
+                        "reason": reason,
+                        "weekly_consumption": weekly_consumption,
+                        "estimated_cost": recommended_qty * 2  # Примерная стоимость $2 за шт
+                    })
+            
+            # Сортируем по приоритету
+            priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+            recommendations.sort(key=lambda x: (priority_order.get(x["urgency"], 4), -x["recommended_qty"]))
+            
+            # Группируем по приоритетам
+            critical = [r for r in recommendations if r["urgency"] == "critical"]
+            high_priority = [r for r in recommendations if r["urgency"] == "high"]
+            medium_priority = [r for r in recommendations if r["urgency"] == "medium"]
+            
+            total_cost = sum(r["estimated_cost"] for r in recommendations)
+            
+            return {
+                "period_days": days,
+                "critical": critical,
+                "high_priority": high_priority,
+                "medium_priority": medium_priority,
+                "total_recommendations": len(recommendations),
+                "total_estimated_cost": total_cost
+            }
+            
+        except Exception as e:
+            logger.error("Failed to generate purchase recommendations", error=str(e))
+            raise
+
+    def _get_outbound_movements(self, days: int) -> list:
+        """
+        Получение движений расхода по заказам за указанный период.
+        Исключаются корректировки - учитываются только реальные расходы по заказам.
+        
+        Args:
+            days: Количество дней назад
+            
+        Returns:
+            list: Список движений расхода по заказам
+        """
+        try:
+            # Получаем все движения
+            movements = self.sheets_client.get_movements(limit=10000)
+            
+            # Фильтруем по дате, типу и источнику (только заказы, без корректировок)
+            # Используем naive datetime для сравнения с movement.timestamp
+            cutoff_date = datetime.now() - timedelta(days=days)
+            
+            outbound_movements = []
+            for movement in movements:
+                # Проверяем:
+                # 1. Дату (в рамках периода)
+                # 2. Отрицательное количество (расход) 
+                # 3. Тип движения ORDER (исключаем CORRECTION)
+                if (movement.timestamp >= cutoff_date and 
+                    movement.qty < 0 and  
+                    movement.type == MovementType.ORDER):  # Только заказы, без корректировок
+                    outbound_movements.append(movement)
+            
+            logger.info(
+                "Retrieved order-based outbound movements",
+                days=days,
+                total_movements=len(movements),
+                outbound_count=len(outbound_movements)
+            )
+            
+            return outbound_movements
+            
+        except Exception as e:
+            logger.error("Failed to get outbound movements", error=str(e))
+            return []
 
 
 # Глобальный экземпляр сервиса

@@ -3,7 +3,7 @@
 
 class TimoshBlanksError(Exception):
     """Базовое исключение для всех ошибок системы."""
-    
+
     def __init__(self, message: str, details: dict = None):
         self.message = message
         self.details = details or {}

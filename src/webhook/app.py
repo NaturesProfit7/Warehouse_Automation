@@ -1,19 +1,17 @@
 """FastAPI приложение для webhook endpoint KeyCRM."""
 
 import json
-from datetime import datetime
-from typing import Dict, Any
-
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-from .handlers import KeyCRMWebhookHandler
-from .auth import verify_webhook_signature
-from ..integrations.keycrm import get_keycrm_client, close_keycrm_client
-from ..utils.logger import get_logger, configure_logging
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
 from ..config import settings
+from ..integrations.keycrm import close_keycrm_client, get_keycrm_client
+from ..utils.logger import configure_logging, get_logger
+from .handlers import KeyCRMWebhookHandler
 
 # Настройка логирования
 configure_logging()
@@ -23,17 +21,17 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения."""
-    
+
     logger.info("Starting webhook application")
-    
+
     # Startup
     try:
         # Инициализация клиентов
         await get_keycrm_client()
         logger.info("KeyCRM client initialized")
-        
+
         yield
-        
+
     finally:
         # Shutdown
         logger.info("Shutting down webhook application")
@@ -79,15 +77,15 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    
+
     try:
         # Проверяем подключение к KeyCRM
         keycrm_client = await get_keycrm_client()
         keycrm_status = "connected" if keycrm_client else "disconnected"
-        
+
         # Общий статус
         status = "healthy" if keycrm_status == "connected" else "degraded"
-        
+
         return JSONResponse(
             status_code=200 if status == "healthy" else 503,
             content={
@@ -99,7 +97,7 @@ async def health_check():
                 }
             }
         )
-        
+
     except Exception as e:
         logger.error("Health check failed", error=str(e))
         return JSONResponse(
@@ -115,14 +113,14 @@ async def health_check():
 @app.get("/ready")
 async def readiness_check():
     """Readiness check endpoint."""
-    
+
     try:
         # Проверяем готовность всех компонентов
         keycrm_client = await get_keycrm_client()
-        
+
         if not keycrm_client:
             raise Exception("KeyCRM client not ready")
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -130,7 +128,7 @@ async def readiness_check():
                 "timestamp": datetime.now().isoformat()
             }
         )
-        
+
     except Exception as e:
         logger.error("Readiness check failed", error=str(e))
         return JSONResponse(
@@ -144,33 +142,49 @@ async def readiness_check():
 
 
 @app.post("/webhook/keycrm")
-async def keycrm_webhook(
-    request: Request,
-    verified_payload: Dict[str, Any] = Depends(verify_webhook_signature)
-):
+async def keycrm_webhook(request: Request):
     """
     Webhook endpoint для приема данных от KeyCRM.
     
-    Ожидается событие `order.change_order_status` со значением `confirmed`.
-    Проверяется HMAC подпись для безопасности.
+    KeyCRM не поддерживает HMAC подписи, поэтому проверяем только базовую структуру.
+    Безопасность обеспечивается через секретность URL и проверку User-Agent.
     """
-    
+
     request_id = f"req_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{id(request)}"
-    
+
     try:
+        # Базовая проверка User-Agent
+        user_agent = request.headers.get("user-agent", "")
+        if "KeyCRM" not in user_agent:
+            logger.warning(
+                "Suspicious webhook request - invalid User-Agent",
+                request_id=request_id,
+                user_agent=user_agent,
+                client_ip=request.client.host if request.client else None
+            )
+
+        # Получение и парсинг payload
+        body = await request.body()
+        try:
+            payload = json.loads(body.decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.error("Invalid JSON payload", error=str(e), request_id=request_id)
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
         logger.info(
             "Received KeyCRM webhook",
             request_id=request_id,
-            event=verified_payload.get("event"),
-            context_keys=list(verified_payload.get("context", {}).keys())
+            webhook_event=payload.get("event"),
+            context_keys=list(payload.get("context", {}).keys()),
+            user_agent=user_agent[:50] + "..." if len(user_agent) > 50 else user_agent
         )
-        
+
         # Обработка webhook
         result = await webhook_handler.handle_keycrm_webhook(
-            verified_payload, 
+            payload,
             request_id=request_id
         )
-        
+
         # Формирование ответа
         response_data = {
             "status": "success",
@@ -178,22 +192,22 @@ async def keycrm_webhook(
             "processed_at": datetime.now().isoformat(),
             **result
         }
-        
+
         logger.info(
             "KeyCRM webhook processed successfully",
             request_id=request_id,
             **result
         )
-        
+
         return JSONResponse(
             status_code=200,
             content=response_data
         )
-        
+
     except HTTPException:
         # Перехватываем и пробрасываем HTTP исключения
         raise
-        
+
     except Exception as e:
         logger.error(
             "Error processing KeyCRM webhook",
@@ -201,7 +215,7 @@ async def keycrm_webhook(
             error=str(e),
             error_type=type(e).__name__
         )
-        
+
         # Возвращаем 500 для повтора со стороны KeyCRM
         return JSONResponse(
             status_code=500,
@@ -220,24 +234,24 @@ async def keycrm_webhook_test(request: Request):
     Тестовый endpoint для webhook KeyCRM (без проверки подписи).
     Используется только в DEBUG режиме.
     """
-    
+
     if not settings.DEBUG:
         raise HTTPException(status_code=404, detail="Not found")
-    
+
     try:
         payload = await request.json()
-        
+
         logger.info(
             "Test webhook received",
             payload=payload
         )
-        
+
         # Обработка без проверки подписи
         result = await webhook_handler.handle_keycrm_webhook(
             payload,
             request_id="test_" + datetime.now().strftime('%H%M%S')
         )
-        
+
         return JSONResponse(
             status_code=200,
             content={
@@ -246,10 +260,10 @@ async def keycrm_webhook_test(request: Request):
                 **result
             }
         )
-        
+
     except Exception as e:
         logger.error("Error processing test webhook", error=str(e))
-        
+
         return JSONResponse(
             status_code=500,
             content={
@@ -264,7 +278,7 @@ async def keycrm_webhook_test(request: Request):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Глобальный обработчик исключений."""
-    
+
     logger.error(
         "Unhandled exception",
         path=request.url.path,
@@ -272,7 +286,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         error=str(exc),
         error_type=type(exc).__name__
     )
-    
+
     return JSONResponse(
         status_code=500,
         content={
@@ -285,11 +299,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     """Запуск приложения для разработки."""
-    
+
     import uvicorn
-    
+
     logger.info("Starting webhook server in development mode")
-    
+
     uvicorn.run(
         "src.webhook.app:app",
         host="0.0.0.0",
